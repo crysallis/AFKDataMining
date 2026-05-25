@@ -189,6 +189,18 @@ def save_snapshot(members: list[Member]) -> int:
                 ],
             )
 
+        # Sync active flag — members in this scan are active, everyone else is not
+        scanned_ids = [
+            r[0] for r in conn.execute(
+                'SELECT member_id FROM member_snapshots WHERE snapshot_id = ? AND member_id IS NOT NULL',
+                (snapshot_id,)
+            ).fetchall()
+        ]
+        if scanned_ids:
+            placeholders = ','.join('?' * len(scanned_ids))
+            conn.execute(f'UPDATE members SET active = 1 WHERE id IN ({placeholders})', scanned_ids)
+            conn.execute(f'UPDATE members SET active = 0 WHERE id NOT IN ({placeholders})', scanned_ids)
+
     return snapshot_id
 
 
