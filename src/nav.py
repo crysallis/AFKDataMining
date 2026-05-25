@@ -70,6 +70,7 @@ def navigate_home(max_attempts: int = 15) -> bool:
             return True
         press_back()
     logging.error("Could not navigate to overview after %d attempts.", max_attempts)
+    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_overview_fail.png"), screenshot())
     return False
 
 
