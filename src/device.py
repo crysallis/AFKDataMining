@@ -5,6 +5,37 @@ import cv2
 
 
 DEVICE = "127.0.0.1:5555"
+EXPECTED_WIDTH   = 1080
+EXPECTED_HEIGHT  = 1920
+EXPECTED_DENSITY = 240
+
+
+def ensure_resolution() -> None:
+    def _get(cmd):
+        r = subprocess.run(["adb", "-s", DEVICE, "shell", "wm"] + cmd, capture_output=True, text=True)
+        return r.stdout.strip()
+
+    size = _get(["size"])
+    density = _get(["density"])
+
+    current = size.split(":")[-1].strip()   # "1080x1920"
+    expected = f"{EXPECTED_WIDTH}x{EXPECTED_HEIGHT}"
+
+    needs_size    = current != expected
+    needs_density = str(EXPECTED_DENSITY) not in density
+
+    if needs_size:
+        print(f"[Resolution] Resetting size {current} -> {expected}")
+        subprocess.run(["adb", "-s", DEVICE, "shell", "wm", "size", expected])
+    if needs_density:
+        print(f"[Resolution] Resetting density -> {EXPECTED_DENSITY}")
+        subprocess.run(["adb", "-s", DEVICE, "shell", "wm", "density", str(EXPECTED_DENSITY)])
+
+    if needs_size or needs_density:
+        time.sleep(2.0)
+        print("[Resolution] Done.")
+    else:
+        print(f"[Resolution] OK ({current} @ {EXPECTED_DENSITY}dpi)")
 
 
 def screenshot() -> np.ndarray:

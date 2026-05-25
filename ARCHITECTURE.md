@@ -4,7 +4,7 @@
 
 The scraper is a pipeline of five distinct layers that transform a live game screen into structured database rows:
 
-```
+```text
 BlueStacks (ADB)
     |
     | raw PNG bytes over TCP
@@ -34,6 +34,23 @@ db.py               Weekly upsert into SQLite
 
 All communication with BlueStacks goes through ADB over TCP at `127.0.0.1:5555`.
 
+### Resolution enforcement
+
+`ensure_resolution()` runs at the start of every scan before any navigation:
+
+```python
+def ensure_resolution() -> None:
+    size    = adb shell wm size     # e.g. "Physical size: 1080x1920"
+    density = adb shell wm density  # e.g. "Physical density: 240"
+    if current != "1080x1920":
+        adb shell wm size 1080x1920
+    if "240" not in density:
+        adb shell wm density 240
+    # sleeps 2.0s if either was changed
+```
+
+This is critical because ADB window manager size and density are independent of the BlueStacks window size on the desktop. Resizing the BlueStacks window does not change the internal resolution · but other things (BlueStacks settings, display profile changes) can. If the resolution drifts, all template match coordinates become wrong. Enforcing it on every scan ensures templates always match.
+
 ### Screenshot capture
 
 ```python
@@ -47,10 +64,11 @@ def screenshot() -> np.ndarray:
 `exec-out screencap -p` streams raw PNG bytes directly over the ADB connection without writing a temp file on the device. This is faster than `adb pull` and avoids leaving files on the emulator.
 
 The bytes go through two conversions:
+
 1. `np.frombuffer(png_bytes, dtype=np.uint8)` · flat byte array that OpenCV can read
 2. `cv2.imdecode(arr, cv2.IMREAD_COLOR)` · decoded BGR image as a numpy ndarray
 
-**Resilience:** `screenshot()` retries up to 3 times with a 0.5s pause between attempts. If ADB returns empty bytes or `cv2.imdecode` returns `None` (corrupt/truncated data during a screen transition), the retry catches it rather than passing garbage to downstream consumers and causing a native C++ crash.
+**Resilience:** `screenshot()` retries up to 3 times with a 0.5s pause between attempts. If ADB returns empty bytes or `cv2.imdecode` returns `None` (corrupt/truncated data during a screen transition), the retry catches it rather than passing garbage to downstream consumers and causing a native C++ crash in the OpenCV internals.
 
 ### Input simulation
 
@@ -97,23 +115,30 @@ def find_template(screen, template_path, threshold=0.75):
 
 ### Navigation path
 
-The full path from any screen to the guild member list:
+`navigate_to_guild_members()` is screen-aware · it checks the current state before deciding what to do, so it handles any starting condition without unnecessary back-navigation:
 
-```
-Any screen
-    -> press BACK (Android keyevent 4) until home screen detected
-    -> tap guild_button (or fallback coordinates 780, 1830)
-    -> wait for guild_home_indicator to appear
-    -> tap guild_banner (the Members entry)
-    -> wait for guild_members_indicator to appear
+```text
+Check current screen
+    -> already at guild members list?  return immediately
+    -> already at guild home?          skip to banner tap
+    -> anywhere else?
+        -> press BACK (Android keyevent 4) up to 15 times until overview detected
+        -> tap guild_button (template match, fallback coords 780, 1830)
+        -> sleep 2.5s  (game has a loading transition after tapping Guild)
+        -> poll up to 20 times x 0.5s for guild_home_indicator to appear
+           (on failure: saves debug_guild_home_fail.png and raises RuntimeError)
+    -> tap guild_banner (template match, fallback coords 120, 57)
+    -> poll up to 15 times x 0.5s for guild_members_indicator to appear
 ```
 
-Each step polls up to 10 times with 0.5s delays before failing. If template matching fails to find a UI element, hardcoded fallback coordinates are used — this handles cases where the template confidence is below threshold but the element is still in its expected position.
+The 2.5s sleep after tapping Guild is intentional · the game plays a brief loading animation before the Admin button (the `guild_home_indicator` template target) is rendered. Polling too early during this window causes false negatives even when the template is correct.
+
+If template matching fails to find a UI element, hardcoded fallback coordinates are used · this handles cases where the template confidence is below threshold but the element is still in its expected position.
 
 ### Templates
 
 | File | What it detects |
-|---|---|
+| --- | --- |
 | `overview_joystick.png` | Home/overworld screen (the joystick HUD) |
 | `guild_button.png` | Guild entry in the overworld UI |
 | `guild_home_indicator.png` | Guild home screen (the admin/settings icon) |
@@ -159,6 +184,7 @@ When a duplicate is found, the existing record is updated rather than replaced �
 ### Stop condition
 
 The scroll loop exits when:
+
 - `len(all_members) >= total` (all expected members captured), or
 - Two consecutive frames show no screen change (end of list reached)
 
@@ -211,6 +237,7 @@ def _current_week_start():
 On each scan, `save_snapshot()` checks whether a snapshot already exists with `scraped_at >= current_week_start`. If yes, it UPDATEs that snapshot and all its member rows. If no, it INSERTs a new snapshot.
 
 This means:
+
 - Multiple scans per week accumulate into one record (the latest data wins)
 - The previous week's snapshot remains untouched for growth comparisons
 - `scraped_at` always reflects when the data was last collected
@@ -239,7 +266,7 @@ This absolute value is what the inactivity alert queries against, since relative
 
 ## Data flow summary
 
-```
+```text
 /scan command in Discord
     -> bot calls execFile(python, [scraper.py])
     -> scraper.py: navigate_to_guild_members()
@@ -267,4 +294,16 @@ python src\capture_template.py guild_button 760 1810 800 1850
 # Saves src/templates/guild_button.png
 ```
 
-Use this whenever a template match stops working — usually after a game UI update or BlueStacks resolution change.
+Use this whenever a template match stops working · usually after a game UI update or BlueStacks display profile change.
+
+### Critical: always use this script to capture templates
+
+Never take a Windows screenshot of the BlueStacks window and crop it manually. The BlueStacks window can be any size on the desktop, but the game always runs internally at 1080x1920. `capture_template.py` pulls from ADB's internal screencap buffer at the true resolution · coordinates from a desktop screenshot of a resized window will be wrong and will cause template matches to fail silently.
+
+Workflow for recapturing a template:
+
+1. Navigate the game to the screen that shows the element you want to capture.
+2. Run `python src\capture_template.py` (no args) to save `screen_debug.png`.
+3. Open `screen_debug.png` in any image editor · hover the cursor over the element corners to read pixel coordinates from the status bar.
+4. Run `python src\capture_template.py <name> <x1> <y1> <x2> <y2>` with those coordinates.
+5. Open the saved template PNG and confirm it contains the correct UI element.
