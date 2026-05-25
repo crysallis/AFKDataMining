@@ -61,6 +61,17 @@ def _is_at_guild_members(screen: np.ndarray) -> bool:
     return find_template(screen, _t("guild_members_indicator"), threshold=0.80) is not None
 
 
+def _tap_ui_back(screen: np.ndarray) -> bool:
+    """Tap an on-screen back button if one is visible. Returns True if tapped."""
+    for name in ('back_dark', 'back_light'):
+        pos = find_template(screen, _t(name), threshold=0.75)
+        if pos:
+            tap(*pos)
+            logging.debug("Tapped UI back button '%s' at %s.", name, pos)
+            return True
+    return False
+
+
 def navigate_home(max_attempts: int = 20) -> str | None:
     """Press Back until any known screen is detected.
 
@@ -79,7 +90,8 @@ def navigate_home(max_attempts: int = 20) -> str | None:
         if _is_at_overview(screen):
             logging.debug("Found overview after %d back-press(es).", attempt)
             return 'overview'
-        press_back()
+        if not _tap_ui_back(screen):
+            press_back()
 
     logging.error("Could not reach a known screen after %d attempts.", max_attempts)
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_overview_fail.png"), screenshot())
