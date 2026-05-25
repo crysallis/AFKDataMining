@@ -61,39 +61,44 @@ def _is_at_guild_members(screen: np.ndarray) -> bool:
     return find_template(screen, _t("guild_members_indicator"), threshold=0.80) is not None
 
 
-def navigate_home(max_attempts: int = 15) -> bool:
-    """Press Back until the world/homestead overview is on screen."""
+def navigate_home(max_attempts: int = 20) -> str | None:
+    """Press Back until any known screen is detected.
+
+    Checks after every back-press — returns 'guild_members', 'guild_home',
+    or 'overview' as soon as one is found. Returns None if max_attempts
+    is exhausted without finding a known screen.
+    """
     for attempt in range(max_attempts):
         screen = screenshot()
+        if _is_at_guild_members(screen):
+            logging.debug("Found guild_members after %d back-press(es).", attempt)
+            return 'guild_members'
+        if _is_at_guild_home(screen):
+            logging.debug("Found guild_home after %d back-press(es).", attempt)
+            return 'guild_home'
         if _is_at_overview(screen):
-            logging.debug("At overview after %d back-press(es).", attempt)
-            return True
+            logging.debug("Found overview after %d back-press(es).", attempt)
+            return 'overview'
         press_back()
-    logging.error("Could not navigate to overview after %d attempts.", max_attempts)
+
+    logging.error("Could not reach a known screen after %d attempts.", max_attempts)
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_overview_fail.png"), screenshot())
-    return False
+    return None
 
 
 def navigate_to_guild_members() -> None:
     """Navigate from any screen to the guild member list."""
     logging.info("Navigating to guild members list.")
 
-    screen = screenshot()
+    where = navigate_home()
+    if where is None:
+        raise RuntimeError("Could not reach a known screen after repeated back-presses.")
 
-    # Already on the members list — nothing to do
-    if _is_at_guild_members(screen):
+    if where == 'guild_members':
         logging.info("Already at guild members list.")
         return
 
-    # Already on guild home — skip all the way back to overview
-    if _is_at_guild_home(screen):
-        logging.info("Already at guild home, tapping banner directly.")
-    else:
-        # Press BACK until we reach the overview/homestead screen
-        if not navigate_home():
-            raise RuntimeError("Could not reach overview screen.")
-        time.sleep(0.5)
-
+    if where == 'overview':
         # Tap Guild in the bottom nav bar
         screen = screenshot()
         pos = find_template(screen, _t("guild_button"), threshold=0.75)
@@ -111,7 +116,7 @@ def navigate_to_guild_members() -> None:
             cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_guild_home_fail.png"), screenshot())
             raise RuntimeError("Guild home screen not detected after tapping Guild.")
 
-    # Tap the guild level banner to open members list
+    # At guild home — tap the guild level banner to open members list
     screen = screenshot()
     pos = find_template(screen, _t("guild_banner"), threshold=0.75)
     tap(*(pos or _GUILD_BANNER_XY))
