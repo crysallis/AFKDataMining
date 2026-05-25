@@ -9,8 +9,11 @@ Usage:
 Run with NO arguments to dump the full screenshot to src/screen_debug.png
 so you can open it and read off pixel coordinates.
 
-──────────────────────────────────────────────────────────────────────────────
-CAPTURE GUIDE  (1080×1920 resolution, estimated coords — verify via debug run)
+CAPTURE GUIDE  (1080x1920 resolution, estimated coords - verify via debug run)
+
+  IMPORTANT: always use this script to capture templates, never screenshot
+  the BlueStacks window directly. ADB screencap reads the internal 1080x1920
+  buffer; a Windows screenshot of the window gives wrong scaled coordinates.
 
   === Navigate to World or Homestead overview first ===
   python src/capture_template.py overview_joystick  420 1430 580 1555
@@ -23,7 +26,6 @@ CAPTURE GUIDE  (1080×1920 resolution, estimated coords — verify via debug run
   === Navigate to Guild members list first ===
   (take debug screenshot, pick a stable element, then run):
   python src/capture_template.py guild_members_indicator  <x1> <y1> <x2> <y2>
-──────────────────────────────────────────────────────────────────────────────
 """
 import sys
 from pathlib import Path
@@ -62,7 +64,7 @@ def main() -> None:
     TEMPLATES_DIR.mkdir(exist_ok=True)
     out = TEMPLATES_DIR / f"{name}.png"
     cv2.imwrite(str(out), crop)
-    print(f"Saved '{name}' ({x2 - x1}×{y2 - y1} px)  →  {out}")
+    print(f"Saved '{name}' ({x2 - x1}x{y2 - y1} px) -> {out}")
 
 
 if __name__ == "__main__":

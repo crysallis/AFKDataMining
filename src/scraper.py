@@ -2,7 +2,7 @@ import re
 import time
 from difflib import SequenceMatcher
 from rapidocr_onnxruntime import RapidOCR
-from device import screenshot, scroll_down, scroll_down_small, scroll_to_top, screen_changed
+from device import screenshot, scroll_down, scroll_down_small, scroll_to_top, screen_changed, ensure_resolution
 from nav import navigate_to_guild_members
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
@@ -103,6 +103,7 @@ def scrape_guild() -> list[Member]:
     all_members: list[Member] = []
 
     init_db()
+    ensure_resolution()
     navigate_to_guild_members()
     print("Starting scrape...")
     _scroll_pass(scroll_down, seen_lower, all_members, 30, "Pass 1")
@@ -137,9 +138,11 @@ def scrape_guild() -> list[Member]:
                 no_change_count = 0
             prev_img = curr_img
 
-    validate_names(all_members)
+    all_members, uncertain = validate_names(all_members)
     snapshot_id = save_snapshot(all_members)
     print(f"Saved to DB as snapshot #{snapshot_id}.")
+    if uncertain:
+        print(f"REVIEW_NAMES: {', '.join(uncertain)}")
     return all_members
 
 

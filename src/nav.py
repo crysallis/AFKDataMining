@@ -77,25 +77,38 @@ def navigate_to_guild_members() -> None:
     """Navigate from any screen to the guild member list."""
     logging.info("Navigating to guild members list.")
 
-    if not navigate_home():
-        raise RuntimeError("Could not reach overview screen.")
-    time.sleep(0.5)
-
-    # Tap Guild in the bottom nav bar
     screen = screenshot()
-    pos = find_template(screen, _t("guild_button"), threshold=0.75)
-    tap(*(pos or _GUILD_BTN_XY))
-    logging.debug("Tapped Guild button at %s.", pos or _GUILD_BTN_XY)
-    time.sleep(1.5)
 
-    # Wait for guild home screen
-    for _ in range(10):
-        screen = screenshot()
-        if _is_at_guild_home(screen):
-            break
-        time.sleep(0.5)
+    # Already on the members list — nothing to do
+    if _is_at_guild_members(screen):
+        logging.info("Already at guild members list.")
+        return
+
+    # Already on guild home — skip all the way back to overview
+    if _is_at_guild_home(screen):
+        logging.info("Already at guild home, tapping banner directly.")
     else:
-        raise RuntimeError("Guild home screen not detected after tapping Guild.")
+        # Press BACK until we reach the overview/homestead screen
+        if not navigate_home():
+            raise RuntimeError("Could not reach overview screen.")
+        time.sleep(0.5)
+
+        # Tap Guild in the bottom nav bar
+        screen = screenshot()
+        pos = find_template(screen, _t("guild_button"), threshold=0.75)
+        tap(*(pos or _GUILD_BTN_XY))
+        logging.debug("Tapped Guild button at %s.", pos or _GUILD_BTN_XY)
+        time.sleep(2.5)
+
+        # Wait for guild home screen
+        for _ in range(20):
+            screen = screenshot()
+            if _is_at_guild_home(screen):
+                break
+            time.sleep(0.5)
+        else:
+            cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_guild_home_fail.png"), screenshot())
+            raise RuntimeError("Guild home screen not detected after tapping Guild.")
 
     # Tap the guild level banner to open members list
     screen = screenshot()
@@ -105,7 +118,7 @@ def navigate_to_guild_members() -> None:
     time.sleep(1.5)
 
     # Confirm we're on the members list
-    for _ in range(10):
+    for _ in range(15):
         screen = screenshot()
         if _is_at_guild_members(screen):
             logging.info("Guild members list reached.")

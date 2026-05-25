@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+
+# SQLite WAL / shared memory (live DB files, not for version control)
+*.db-shm
+*.db-wal
+
+# Debug screenshots generated at runtime
+src/screen_debug.png
+src/debug_*.png
+src/topright_debug.png
+
+# DB file itself (shared with bot, not committed)
+guild.db

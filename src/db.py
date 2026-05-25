@@ -238,9 +238,16 @@ def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> s
     return None
 
 
-def validate_names(members: list[Member]) -> list[Member]:
+def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
+    """Returns (members, uncertain_names).
+
+    uncertain_names contains OCR'd names that had ambiguous characters, no
+    history match, and no stdin available to prompt · saved as-is and should
+    be reviewed with /rename.
+    """
     corrections = get_corrections()
     known_names = _get_known_names()
+    uncertain: list[str] = []
 
     for m in members:
         original = m.name
@@ -257,7 +264,7 @@ def validate_names(members: list[Member]) -> list[Member]:
         # Step 3: fuzzy match against DB history
         match = _fuzzy_match_known(original, known_names)
         if match:
-            print(f"  Auto-corrected '{original}' → '{match}' (matched history)")
+            print(f"  Auto-corrected '{original}' -> '{match}' (matched history)")
             save_correction(original, match)
             m.name = match
             continue
@@ -265,14 +272,16 @@ def validate_names(members: list[Member]) -> list[Member]:
         # Step 4: unknown — ask once (skipped silently when running non-interactively)
         print(f"\n  New name with ambiguous characters: '{original}'")
         try:
-            answer = input(f"  Enter correct name (or press Enter to accept): ").strip()
+            answer = input("  Enter correct name (or press Enter to accept): ").strip()
         except EOFError:
             answer = ""
         correct = answer if answer else original
         save_correction(original, correct)
         m.name = correct
+        if not answer:
+            uncertain.append(correct)
 
-    return members
+    return members, uncertain
 
 
 # --- Query helpers for the bot ---
