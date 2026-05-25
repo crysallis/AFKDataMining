@@ -262,9 +262,12 @@ def validate_names(members: list[Member]) -> list[Member]:
             m.name = match
             continue
 
-        # Step 4: unknown — ask once
+        # Step 4: unknown — ask once (skipped silently when running non-interactively)
         print(f"\n  New name with ambiguous characters: '{original}'")
-        answer = input(f"  Enter correct name (or press Enter to accept): ").strip()
+        try:
+            answer = input(f"  Enter correct name (or press Enter to accept): ").strip()
+        except EOFError:
+            answer = ""
         correct = answer if answer else original
         save_correction(original, correct)
         m.name = correct

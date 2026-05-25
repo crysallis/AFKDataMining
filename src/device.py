@@ -8,13 +8,21 @@ DEVICE = "127.0.0.1:5555"
 
 
 def screenshot() -> np.ndarray:
-    result = subprocess.run(
-        ["adb", "-s", DEVICE, "exec-out", "screencap", "-p"],
-        capture_output=True,
-    )
-    png_bytes = result.stdout
-    arr = np.frombuffer(png_bytes, dtype=np.uint8)
-    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    for attempt in range(3):
+        result = subprocess.run(
+            ["adb", "-s", DEVICE, "exec-out", "screencap", "-p"],
+            capture_output=True,
+        )
+        png_bytes = result.stdout
+        if not png_bytes:
+            time.sleep(0.5)
+            continue
+        arr = np.frombuffer(png_bytes, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is not None:
+            return img
+        time.sleep(0.5)
+    raise RuntimeError("screenshot() failed after 3 attempts — ADB returned empty or corrupt data")
 
 
 def tap(x: int, y: int) -> None:
