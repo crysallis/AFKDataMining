@@ -12,6 +12,10 @@ venv/
 src/screen_debug.png
 src/debug_*.png
 src/topright_debug.png
+screen_tmp.png
+
+# Live log output
+scraper.log
 
 # DB file itself (shared with bot, not committed)
 guild.db

@@ -1,24 +1,67 @@
-import subprocess
 import time
 import numpy as np
 import cv2
-
+import adbutils
 
 DEVICE = "127.0.0.1:5555"
 EXPECTED_WIDTH   = 1080
 EXPECTED_HEIGHT  = 1920
 EXPECTED_DENSITY = 240
 
+_client: adbutils.AdbClient | None = None
+_device: adbutils.AdbDevice | None = None
+
+
+def _get_device() -> adbutils.AdbDevice:
+    global _client, _device
+    if _client is None:
+        _client = adbutils.AdbClient(host="127.0.0.1", port=5037)
+        _client.server_version()  # starts ADB server if not running
+        _client.connect(DEVICE)
+        _device = _client.device(DEVICE)
+    return _device
+
+
+def _reconnect() -> None:
+    global _client, _device
+    print("[ADB] Reconnecting...")
+    try:
+        if _client:
+            _client.server_kill()
+    except Exception:
+        pass
+    time.sleep(1.0)
+    _client = adbutils.AdbClient(host="127.0.0.1", port=5037)
+    _client.server_version()  # starts ADB server if not running
+    _client.connect(DEVICE)
+    _device = _client.device(DEVICE)
+    print("[ADB] Reconnected.")
+
+
+def _shell(cmd, stream=False, timeout=10.0):
+    """Run a shell command with retry+reconnect."""
+    last_exc = None
+    for attempt in range(4):
+        if attempt == 2:
+            _reconnect()
+        try:
+            d = _get_device()
+            if stream:
+                with d.shell(cmd, stream=True, timeout=timeout) as conn:
+                    return conn.read_until_close(encoding=None)
+            return d.shell(cmd, timeout=timeout)
+        except Exception as e:
+            last_exc = e
+            print(f"[ADB] shell {cmd!r} attempt {attempt+1} failed: {e}")
+            time.sleep(0.5)
+    raise RuntimeError(f"ADB shell failed after 4 attempts: {last_exc}")
+
 
 def ensure_resolution() -> None:
-    def _get(cmd):
-        r = subprocess.run(["adb", "-s", DEVICE, "shell", "wm"] + cmd, capture_output=True, text=True)
-        return r.stdout.strip()
+    size = _shell("wm size")
+    density = _shell("wm density")
 
-    size = _get(["size"])
-    density = _get(["density"])
-
-    current = size.split(":")[-1].strip()   # "1080x1920"
+    current = size.split(":")[-1].strip()
     expected = f"{EXPECTED_WIDTH}x{EXPECTED_HEIGHT}"
 
     needs_size    = current != expected
@@ -26,10 +69,10 @@ def ensure_resolution() -> None:
 
     if needs_size:
         print(f"[Resolution] Resetting size {current} -> {expected}")
-        subprocess.run(["adb", "-s", DEVICE, "shell", "wm", "size", expected])
+        _shell(f"wm size {expected}")
     if needs_density:
         print(f"[Resolution] Resetting density -> {EXPECTED_DENSITY}")
-        subprocess.run(["adb", "-s", DEVICE, "shell", "wm", "density", str(EXPECTED_DENSITY)])
+        _shell(f"wm density {EXPECTED_DENSITY}")
 
     if needs_size or needs_density:
         time.sleep(2.0)
@@ -39,32 +82,22 @@ def ensure_resolution() -> None:
 
 
 def screenshot() -> np.ndarray:
-    for attempt in range(3):
-        result = subprocess.run(
-            ["adb", "-s", DEVICE, "exec-out", "screencap", "-p"],
-            capture_output=True,
-        )
-        png_bytes = result.stdout
-        if not png_bytes:
-            time.sleep(0.5)
-            continue
-        arr = np.frombuffer(png_bytes, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is not None:
-            return img
-        time.sleep(0.5)
-    raise RuntimeError("screenshot() failed after 3 attempts — ADB returned empty or corrupt data")
+    png_bytes = _shell("screencap -p", stream=True, timeout=15.0)
+    if not png_bytes:
+        raise RuntimeError("screencap returned empty bytes")
+    arr = np.frombuffer(png_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError(f"cv2.imdecode failed on {len(png_bytes)} bytes")
+    return img
 
 
 def tap(x: int, y: int) -> None:
-    subprocess.run(["adb", "-s", DEVICE, "shell", "input", "tap", str(x), str(y)])
+    _shell(f"input tap {x} {y}", timeout=5.0)
 
 
 def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
-    subprocess.run([
-        "adb", "-s", DEVICE, "shell", "input", "swipe",
-        str(x1), str(y1), str(x2), str(y2), str(duration_ms),
-    ])
+    _shell(f"input swipe {x1} {y1} {x2} {y2} {duration_ms}", timeout=5.0)
 
 
 def scroll_down() -> None:
