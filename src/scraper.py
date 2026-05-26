@@ -1,4 +1,6 @@
+import logging
 import re
+import sys
 import time
 from difflib import SequenceMatcher
 from rapidocr_onnxruntime import RapidOCR
@@ -6,6 +8,25 @@ from device import screenshot, scroll_down, scroll_down_small, scroll_to_top, sc
 from nav import navigate_to_guild_members
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
+
+_log_fh = open('C:/vscode/AFKDataMining/scraper.log', 'w', encoding='utf-8', buffering=1)
+
+class _Tee:
+    def __init__(self, *streams): self.streams = streams
+    def write(self, data):
+        for s in self.streams: s.write(data)
+    def flush(self):
+        for s in self.streams: s.flush()
+    def fileno(self): return self.streams[0].fileno()
+
+sys.stdout = _Tee(sys.__stdout__, _log_fh)
+sys.stderr = _Tee(sys.__stderr__, _log_fh)
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='[%(name)s] %(message)s',
+    handlers=[logging.StreamHandler(sys.__stdout__), logging.FileHandler('C:/vscode/AFKDataMining/scraper.log', mode='a', encoding='utf-8')],
+)
 
 TOTAL_RE = re.compile(r"Guild Member \((\d+)/(\d+)\)")
 
@@ -62,12 +83,13 @@ def _process_screen(ocr_results, seen_lower, all_members) -> int:
     return new_count
 
 
-def _scroll_pass(scroll_fn, seen_lower, all_members, total, label) -> None:
+def _scroll_pass(scroll_fn, seen_lower, all_members, total, label, max_scrolls=60) -> None:
     scroll_to_top()
     no_change_count = 0
+    scroll_count = 0
     prev_img = screenshot()
 
-    while len(all_members) < total:
+    while len(all_members) < total and scroll_count < max_scrolls:
         img = screenshot()
         results = _ocr(img)
 
@@ -85,6 +107,7 @@ def _scroll_pass(scroll_fn, seen_lower, all_members, total, label) -> None:
             return
 
         scroll_fn()
+        scroll_count += 1
         time.sleep(1.2)
 
         curr_img = screenshot()
@@ -96,6 +119,9 @@ def _scroll_pass(scroll_fn, seen_lower, all_members, total, label) -> None:
         else:
             no_change_count = 0
         prev_img = curr_img
+
+    if scroll_count >= max_scrolls:
+        print(f"{label} hit scroll limit ({max_scrolls}), stopping.")
 
 
 def scrape_guild() -> list[Member]:
