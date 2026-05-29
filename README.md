@@ -46,8 +46,10 @@ The scraper will:
 1. Navigate from the current screen to the guild member list automatically
 2. Scroll through all members, capturing each via OCR
 3. Run up to two additional passes to fill in missing data
-4. Validate and correct OCR'd names against known history
+4. Resolve each OCR'd name into the canonical member roster (alias → exact → fuzzy match); reads it can't confidently match are flagged `pending` for review via the bot's `/review`
 5. Save or update this week's snapshot in `guild.db`
+
+The scan runs non-interactively — it never prompts for input — and is resilient to ADB stalls via a wall-clock watchdog, so a hung `screencap` can't freeze it.
 
 Alternatively, trigger a scan from Discord using `/scan` (authorized user only).
 

@@ -9,6 +9,12 @@ from nav import navigate_to_guild_members
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
 
+for _std in (sys.__stdout__, sys.__stderr__):
+    try:
+        _std.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 _log_fh = open('C:/vscode/AFKDataMining/scraper.log', 'w', encoding='utf-8', buffering=1)
 
 class _Tee:
@@ -171,7 +177,7 @@ def scrape_guild() -> list[Member]:
             prev_img = curr_img
 
     all_members, uncertain = validate_names(all_members)
-    snapshot_id = save_snapshot(all_members)
+    snapshot_id = save_snapshot(all_members, pending_names=set(uncertain))
     print(f"Saved to DB as snapshot #{snapshot_id}.")
     if uncertain:
         print(f"REVIEW_NAMES: {', '.join(uncertain)}")

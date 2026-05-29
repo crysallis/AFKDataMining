@@ -1,3 +1,4 @@
+import threading
 import time
 import numpy as np
 import cv2
@@ -17,6 +18,7 @@ def _get_device() -> adbutils.AdbDevice:
     if _client is None:
         _client = adbutils.AdbClient(host="127.0.0.1", port=5037)
         _client.server_version()  # starts ADB server if not running
+    if _device is None:
         _client.connect(DEVICE)
         _device = _client.device(DEVICE)
     return _device
@@ -38,21 +40,50 @@ def _reconnect() -> None:
     print("[ADB] Reconnected.")
 
 
+def _run_with_deadline(fn, deadline: float):
+    """Run fn() in a worker thread, raising TimeoutError if it blocks past
+    `deadline` seconds. adbutils' socket timeout does not reliably interrupt a
+    stalled screencap stream, so this wall-clock watchdog is the real guard.
+    A timed-out worker is abandoned (daemon) and its dead socket discarded."""
+    box: dict = {}
+
+    def worker():
+        try:
+            box["value"] = fn()
+        except Exception as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    t.join(deadline)
+    if t.is_alive():
+        raise TimeoutError(f"call exceeded {deadline}s wall-clock")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def _shell(cmd, stream=False, timeout=10.0):
-    """Run a shell command with retry+reconnect."""
+    """Run a shell command with a hard wall-clock timeout + retry/reconnect."""
+    global _device
     last_exc = None
     for attempt in range(4):
         if attempt == 2:
             _reconnect()
         try:
             d = _get_device()
-            if stream:
-                with d.shell(cmd, stream=True, timeout=timeout) as conn:
-                    return conn.read_until_close(encoding=None)
-            return d.shell(cmd, timeout=timeout)
+
+            def call():
+                if stream:
+                    with d.shell(cmd, stream=True, timeout=timeout) as conn:
+                        return conn.read_until_close(encoding=None)
+                return d.shell(cmd, timeout=timeout)
+
+            return _run_with_deadline(call, timeout + 5.0)
         except Exception as e:
             last_exc = e
             print(f"[ADB] shell {cmd!r} attempt {attempt+1} failed: {e}")
+            _device = None  # drop the (possibly hung) handle so next attempt reconnects
             time.sleep(0.5)
     raise RuntimeError(f"ADB shell failed after 4 attempts: {last_exc}")
 
