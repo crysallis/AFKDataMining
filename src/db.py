@@ -91,6 +91,30 @@ def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
     return scraped_at - delta
 
 
+KNOWN_WARBANDS = ("RKF RiffRaff", "RKF Kings", "Sobaquitos")
+# Hard OCR misreads that fuzzy matching can't catch · keys are lowercase
+WARBAND_ALIASES = {"dkekinos": "RKF Kings"}
+
+
+def _canon_warband(w: str) -> str:
+    """Snap an OCR'd warband to the nearest known warband (e.g. 'Sobaguitos' -> 'Sobaquitos').
+    Leaves it untouched if empty or no close match · edit KNOWN_WARBANDS/WARBAND_ALIASES as needed."""
+    if not w:
+        return w
+    low = w.lower()
+    if low in WARBAND_ALIASES:
+        return WARBAND_ALIASES[low]
+    for k in KNOWN_WARBANDS:
+        if k.lower() == low:
+            return k
+    best, score = w, 0.0
+    for k in KNOWN_WARBANDS:
+        r = SequenceMatcher(None, low, k.lower()).ratio()
+        if r > score:
+            best, score = k, r
+    return best if score >= 0.8 else w
+
+
 def _parse_power_value(power: str) -> float:
     m = re.match(r"([\d.]+)([KM])", power, re.IGNORECASE)
     if not m:
@@ -124,6 +148,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
     scraped_at_str = scraped_at.isoformat()
     week_start = _current_week_start()
     pending_names = pending_names or set()
+    for m in members:
+        m.warband = _canon_warband(m.warband)
 
     with _connect() as conn:
         existing = conn.execute(
