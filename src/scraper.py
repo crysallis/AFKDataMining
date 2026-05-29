@@ -43,7 +43,7 @@ def _get_total_members(ocr_results) -> int:
         m = TOTAL_RE.search(text)
         if m:
             return int(m.group(2))
-    return 30
+    return 90
 
 
 def _fuzzy_key(name: str, seen_lower: set[str], threshold: float = 0.88) -> str | None:
@@ -64,7 +64,7 @@ def _process_screen(ocr_results, seen_lower, all_members) -> int:
             seen_lower.add(m.name.lower())
             all_members.append(m)
             new_count += 1
-            print(f"  Found: {m.name} | {m.last_active} | {m.combat_power} | {m.activeness}")
+            print(f"  Found: {m.name} | {m.last_active} | {m.combat_power} | {m.warband} | {m.activeness}")
         else:
             for existing in all_members:
                 if existing.name.lower() == key:
@@ -74,6 +74,9 @@ def _process_screen(ocr_results, seen_lower, all_members) -> int:
                     if existing.activeness == 0 and m.activeness > 0:
                         existing.activeness = m.activeness
                         print(f"  Updated activeness: {existing.name} = {m.activeness}")
+                    if not existing.warband and m.warband:
+                        existing.warband = m.warband
+                        print(f"  Updated warband: {existing.name} = {m.warband}")
                     # Prefer name with more digits (better OCR read of numbers)
                     new_digits = sum(c.isdigit() for c in m.name)
                     old_digits = sum(c.isdigit() for c in existing.name)
@@ -132,11 +135,14 @@ def scrape_guild() -> list[Member]:
     ensure_resolution()
     navigate_to_guild_members()
     print("Starting scrape...")
-    _scroll_pass(scroll_down, seen_lower, all_members, 30, "Pass 1")
+    total = _get_total_members(_ocr(screenshot()))
+    print(f"Target: {total} members")
 
-    if len(all_members) < 30:
-        print(f"\nSecond pass (missing {30 - len(all_members)})...")
-        _scroll_pass(scroll_down_small, seen_lower, all_members, 30, "Pass 2")
+    _scroll_pass(scroll_down, seen_lower, all_members, total, "Pass 1", max_scrolls=150)
+
+    if len(all_members) < total:
+        print(f"\nSecond pass (missing {total - len(all_members)})...")
+        _scroll_pass(scroll_down_small, seen_lower, all_members, total, "Pass 2", max_scrolls=150)
 
     # Cleanup pass: fill any members still missing activeness
     incomplete = [m for m in all_members if m.activeness == 0]
@@ -176,4 +182,4 @@ if __name__ == "__main__":
     members = scrape_guild()
     print(f"\nDone. Captured {len(members)} members.")
     for m in members:
-        print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.activeness}")
+        print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")

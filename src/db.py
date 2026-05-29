@@ -50,7 +50,8 @@ def init_db() -> None:
                 last_seen_approx    TEXT,
                 combat_power        TEXT NOT NULL,
                 combat_power_value  REAL,
-                activeness          INTEGER NOT NULL
+                activeness          INTEGER NOT NULL,
+                warband             TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_ms_snapshot ON member_snapshots(snapshot_id);
@@ -63,6 +64,13 @@ def init_db() -> None:
                 source       TEXT NOT NULL DEFAULT 'ocr'
             );
         """)
+        # Migrations
+        try:
+            conn.execute("ALTER TABLE member_snapshots ADD COLUMN warband TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e):
+                print(f"[DB migration] {e}")
 
 
 def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
@@ -133,7 +141,7 @@ def save_snapshot(members: list[Member]) -> int:
                     conn.execute(
                         """UPDATE member_snapshots
                            SET name = ?, last_active = ?, last_seen_approx = ?,
-                               combat_power = ?, combat_power_value = ?, activeness = ?
+                               combat_power = ?, combat_power_value = ?, activeness = ?, warband = ?
                            WHERE snapshot_id = ? AND member_id = ?""",
                         (
                             m.name,
@@ -142,6 +150,7 @@ def save_snapshot(members: list[Member]) -> int:
                             m.combat_power,
                             _parse_power_value(m.combat_power),
                             m.activeness,
+                            m.warband,
                             snapshot_id,
                             member_id,
                         ),
@@ -150,8 +159,8 @@ def save_snapshot(members: list[Member]) -> int:
                     conn.execute(
                         """INSERT INTO member_snapshots
                            (snapshot_id, member_id, name, last_active, last_seen_approx,
-                            combat_power, combat_power_value, activeness)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            combat_power, combat_power_value, activeness, warband)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             snapshot_id,
                             member_id,
@@ -161,6 +170,7 @@ def save_snapshot(members: list[Member]) -> int:
                             m.combat_power,
                             _parse_power_value(m.combat_power),
                             m.activeness,
+                            m.warband,
                         ),
                     )
         else:
@@ -172,8 +182,8 @@ def save_snapshot(members: list[Member]) -> int:
             conn.executemany(
                 """INSERT INTO member_snapshots
                    (snapshot_id, member_id, name, last_active, last_seen_approx,
-                    combat_power, combat_power_value, activeness)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    combat_power, combat_power_value, activeness, warband)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         snapshot_id,
@@ -184,6 +194,7 @@ def save_snapshot(members: list[Member]) -> int:
                         m.combat_power,
                         _parse_power_value(m.combat_power),
                         m.activeness,
+                        m.warband,
                     )
                     for m in members
                 ],
