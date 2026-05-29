@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 TIME_RE = re.compile(r"^(\d+[smhd]\s*ago|online)$", re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
-SKIP_NAMES = {"Friends", "Guild Announcement", "Me", "Fellowship", "Activeness", "Descending"}
+SKIP_NAMES = {"Friends", "Guild Announcement", "Me", "Fellowship", "Activeness", "Descending", "Warband"}
 
 
 @dataclass
@@ -12,6 +12,7 @@ class Member:
     last_active: str
     combat_power: str
     activeness: int
+    warband: str = ''
 
 
 def _parse_blocks(ocr_results: list) -> list[tuple[int, int, str]]:
@@ -54,11 +55,12 @@ def parse_members(ocr_results: list) -> list[Member]:
         name = re.sub(r"(?<=\d)l(?=\d|$)", "1", name)
         name = re.sub(r"(?<=\d)O(?=\d|$)", "0", name)
 
-        # Power + activeness row ~95px below timestamp
+        # Power / warband / activeness row ~95px below timestamp
         power_row = _find_near_y(blocks, ts_y + 95, 50)
 
         combat_power = ""
         activeness = 0
+        warband = ""
 
         for x, y, t in power_row:
             if x < 450:
@@ -70,11 +72,22 @@ def parse_members(ocr_results: list) -> list[Member]:
                 if nums:
                     activeness = int(nums[0])
 
+            # Warband: middle-region text, not power, not a pure number, not a known header/artifact
+            if (not warband
+                    and 200 <= x <= 680
+                    and not POWER_RE.search(t)
+                    and not re.match(r'^\d+$', t)
+                    and not t.startswith('(')
+                    and len(t) >= 2
+                    and t not in SKIP_NAMES):
+                warband = t
+
         members.append(Member(
             name=name,
             last_active=ts_text,
             combat_power=combat_power,
             activeness=activeness,
+            warband=warband,
         ))
 
     return members
