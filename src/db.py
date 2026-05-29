@@ -65,12 +65,17 @@ def init_db() -> None:
             );
         """)
         # Migrations
-        try:
-            conn.execute("ALTER TABLE member_snapshots ADD COLUMN warband TEXT NOT NULL DEFAULT ''")
-            conn.commit()
-        except Exception as e:
-            if "duplicate column" not in str(e):
-                print(f"[DB migration] {e}")
+        for ddl in (
+            "ALTER TABLE member_snapshots ADD COLUMN warband TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE members ADD COLUMN active INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE members ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                conn.execute(ddl)
+                conn.commit()
+            except Exception as e:
+                if "duplicate column" not in str(e):
+                    print(f"[DB migration] {e}")
 
 
 def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
@@ -94,13 +99,13 @@ def _parse_power_value(power: str) -> float:
     return value * 1_000_000 if m.group(2).upper() == "M" else value * 1_000
 
 
-def _get_or_create_member(conn: sqlite3.Connection, name: str, first_seen: str) -> int:
+def _get_or_create_member(conn: sqlite3.Connection, name: str, first_seen: str, pending: int = 0) -> int:
     row = conn.execute("SELECT id FROM members WHERE ingame_name = ?", (name,)).fetchone()
     if row:
         return row[0]
     cur = conn.execute(
-        "INSERT INTO members (ingame_name, first_seen) VALUES (?, ?)",
-        (name, first_seen),
+        "INSERT INTO members (ingame_name, first_seen, pending) VALUES (?, ?, ?)",
+        (name, first_seen, pending),
     )
     return cur.lastrowid
 
@@ -114,10 +119,11 @@ def _current_week_start() -> str:
     return monday.isoformat()
 
 
-def save_snapshot(members: list[Member]) -> int:
+def save_snapshot(members: list[Member], pending_names: set[str] | None = None) -> int:
     scraped_at = datetime.utcnow()
     scraped_at_str = scraped_at.isoformat()
     week_start = _current_week_start()
+    pending_names = pending_names or set()
 
     with _connect() as conn:
         existing = conn.execute(
@@ -132,7 +138,9 @@ def save_snapshot(members: list[Member]) -> int:
                 (scraped_at_str, len(members), snapshot_id),
             )
             for m in members:
-                member_id = _get_or_create_member(conn, m.name, scraped_at_str)
+                member_id = _get_or_create_member(
+                    conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0
+                )
                 row = conn.execute(
                     "SELECT id FROM member_snapshots WHERE snapshot_id = ? AND member_id = ?",
                     (snapshot_id, member_id),
@@ -187,7 +195,9 @@ def save_snapshot(members: list[Member]) -> int:
                 [
                     (
                         snapshot_id,
-                        _get_or_create_member(conn, m.name, scraped_at_str),
+                        _get_or_create_member(
+                            conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0
+                        ),
                         m.name,
                         m.last_active,
                         _parse_last_seen(m.last_active, scraped_at).isoformat(),
@@ -217,8 +227,6 @@ def save_snapshot(members: list[Member]) -> int:
 
 # --- Name correction helpers ---
 
-AMBIGUOUS = re.compile(r"[1lLIi0O]")
-
 
 def get_corrections() -> dict[str, str]:
     with _connect() as conn:
@@ -242,10 +250,19 @@ def apply_corrections(members: list[Member]) -> list[Member]:
     return members
 
 
-def _get_known_names() -> set[str]:
+def _get_active_roster() -> set[str]:
+    """Canonical names of currently-active members · the set we resolve OCR reads into."""
     with _connect() as conn:
-        rows = conn.execute("SELECT DISTINCT name FROM member_snapshots").fetchall()
-    return {r["name"] for r in rows}
+        rows = conn.execute("SELECT ingame_name FROM members WHERE active = 1").fetchall()
+    return {r["ingame_name"] for r in rows}
+
+
+def _roster_exact(name: str, roster: set[str]) -> str | None:
+    low = name.lower()
+    for r in roster:
+        if r.lower() == low:
+            return r
+    return None
 
 
 def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> str | None:
@@ -262,47 +279,41 @@ def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> s
 
 
 def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
-    """Returns (members, uncertain_names).
+    """Resolve each OCR'd name into the canonical active roster · never blocks on input.
 
-    uncertain_names contains OCR'd names that had ambiguous characters, no
-    history match, and no stdin available to prompt · saved as-is and should
-    be reviewed with /rename.
+    Returns (members, uncertain_names). uncertain_names are reads that matched no
+    existing member (alias / exact / fuzzy) · they are accepted as-is, the member is
+    created with pending=1 by save_snapshot, and they are surfaced via REVIEW_NAMES
+    so they can be approved or merged later.
     """
     corrections = get_corrections()
-    known_names = _get_known_names()
+    roster = _get_active_roster()
     uncertain: list[str] = []
 
     for m in members:
         original = m.name
 
-        # Step 1: known correction (case-insensitive lookup)
+        # 1. Known alias (case-insensitive)
         if original.lower() in corrections:
             m.name = corrections[original.lower()]
             continue
 
-        # Step 2: no ambiguous chars — accept as-is
-        if not AMBIGUOUS.search(original):
+        # 2. Exact roster match (case-insensitive)
+        exact = _roster_exact(original, roster)
+        if exact:
+            m.name = exact
             continue
 
-        # Step 3: fuzzy match against DB history
-        match = _fuzzy_match_known(original, known_names)
+        # 3. Fuzzy match against the active roster
+        match = _fuzzy_match_known(original, roster, threshold=0.86)
         if match:
-            print(f"  Auto-corrected '{original}' -> '{match}' (matched history)")
+            print(f"  Auto-corrected '{original}' -> '{match}' (matched roster)")
             save_correction(original, match)
             m.name = match
             continue
 
-        # Step 4: unknown — ask once (skipped silently when running non-interactively)
-        print(f"\n  New name with ambiguous characters: '{original}'")
-        try:
-            answer = input("  Enter correct name (or press Enter to accept): ").strip()
-        except EOFError:
-            answer = ""
-        correct = answer if answer else original
-        save_correction(original, correct)
-        m.name = correct
-        if not answer:
-            uncertain.append(correct)
+        # 4. Unknown read — accept as-is, flag pending + for review
+        uncertain.append(original)
 
     return members, uncertain
 

@@ -51,24 +51,46 @@ def ensure_resolution() -> None:
 
 This is critical because ADB window manager size and density are independent of the BlueStacks window size on the desktop. Resizing the BlueStacks window does not change the internal resolution · but other things (BlueStacks settings, display profile changes) can. If the resolution drifts, all template match coordinates become wrong. Enforcing it on every scan ensures templates always match.
 
+### ADB transport · adbutils + wall-clock watchdog
+
+All shell commands go through `_shell()`, which uses a persistent **adbutils** client/device
+(`127.0.0.1:5555`) rather than spawning `adb` subprocesses. Each call is wrapped in
+`_run_with_deadline()` — a worker thread joined with a hard wall-clock timeout:
+
+```python
+def _shell(cmd, stream=False, timeout=10.0):
+    for attempt in range(4):
+        if attempt == 2:
+            _reconnect()                      # kill + restart ADB server, re-connect
+        try:
+            return _run_with_deadline(call, timeout + 5.0)
+        except Exception:
+            _device = None                    # drop the (possibly hung) handle
+            time.sleep(0.5)
+```
+
+This matters because adbutils' own socket `timeout` does **not** reliably interrupt a stalled
+`screencap` stream — right after a reboot, or when a game update raises the render load on the
+guild screen, a capture can block indefinitely. The watchdog guarantees the scraper never
+hard-freezes: a hung call is abandoned, the dead handle dropped, and the next attempt reconnects
+(escalating to a full ADB server restart on attempt 3).
+
 ### Screenshot capture
 
 ```python
 def screenshot() -> np.ndarray:
-    result = subprocess.run(
-        ["adb", "-s", DEVICE, "exec-out", "screencap", "-p"],
-        capture_output=True,
-    )
+    png_bytes = _shell("screencap -p", stream=True, timeout=15.0)
 ```
 
-`exec-out screencap -p` streams raw PNG bytes directly over the ADB connection without writing a temp file on the device. This is faster than `adb pull` and avoids leaving files on the emulator.
-
+`screencap -p` streams raw PNG bytes over the adbutils connection (no temp file on the device).
 The bytes go through two conversions:
 
 1. `np.frombuffer(png_bytes, dtype=np.uint8)` · flat byte array that OpenCV can read
 2. `cv2.imdecode(arr, cv2.IMREAD_COLOR)` · decoded BGR image as a numpy ndarray
 
-**Resilience:** `screenshot()` retries up to 3 times with a 0.5s pause between attempts. If ADB returns empty bytes or `cv2.imdecode` returns `None` (corrupt/truncated data during a screen transition), the retry catches it rather than passing garbage to downstream consumers and causing a native C++ crash in the OpenCV internals.
+If ADB returns empty bytes or `cv2.imdecode` returns `None` (corrupt/truncated data during a
+screen transition), `screenshot()` raises and the `_shell` retry/reconnect loop handles it —
+rather than passing garbage downstream and crashing the OpenCV internals.
 
 ### Input simulation
 
@@ -188,7 +210,9 @@ The scroll loop exits when:
 - `len(all_members) >= total` (all expected members captured), or
 - Two consecutive frames show no screen change (end of list reached)
 
-Total member count is read from the "Guild Member (X/Y)" header text visible at the top of the list. It defaults to 30 if not detected.
+Total member count is read from the "Guild Member (X/Y)" header text visible at the top of the list. It defaults to 90 if not detected (the roster spans RiffRaff plus the sister warbands, not just the 30-member RiffRaff guild).
+
+All scraper stdout/stderr is reconfigured to UTF-8 at startup so Unicode in-game names (e.g. `Mullikai 「ψ」`) print without crashing on the Windows cp1252 console.
 
 ---
 
@@ -217,10 +241,12 @@ Parsing uses regex to identify each field type from the OCR text and associates 
 
 ```sql
 snapshots           One row per week. scraped_at updated on each scan.
-members             One row per player. discord_id links to Discord account.
-member_snapshots    One row per member per snapshot. All scraped stats live here.
-name_corrections    Maps OCR'd names to corrected names. Persists across scans.
-member_name_history Audit log of /rename operations from the bot.
+members             One row per player (canonical roster). discord_id links to Discord.
+                    active = present in latest scan. pending = 1 when a read could not be
+                    confidently matched to an existing member (awaiting bot /review).
+member_snapshots    One row per member per snapshot. All scraped stats incl. warband.
+name_corrections    Maps OCR'd names to canonical names. Persists across scans.
+member_name_history Audit log of /rename and merge operations from the bot.
 ```
 
 ### Weekly upsert logic
@@ -242,14 +268,23 @@ This means:
 - The previous week's snapshot remains untouched for growth comparisons
 - `scraped_at` always reflects when the data was last collected
 
-### Name correction pipeline
+### Name resolution pipeline · `validate_names()`
 
-Names from OCR often contain misread characters, especially ambiguous glyphs like `1/l/I`, `0/O`. The correction pipeline runs in order:
+OCR reads drift between scans (especially with the warband text now sitting next to names), so
+each read is resolved *into* the canonical active roster rather than trusted verbatim — this is
+what prevents a noisy read from creating a duplicate member row. The pipeline runs in order, per
+name, and **never blocks on input** (the old interactive prompt is gone):
 
-1. **Known correction** · exact match (case-insensitive) in `name_corrections` table
-2. **Clean name** · if the name contains no ambiguous characters, accept as-is
-3. **Fuzzy history match** · compare against all known names in DB history using SequenceMatcher (threshold 0.88). If matched, save the correction for future scans.
-4. **Interactive prompt** · shown only when running manually (stdin available). Skipped silently in non-interactive contexts (bot subprocess, stdin closed = EOFError caught).
+1. **Alias** · exact match (case-insensitive) in `name_corrections` → use canonical name
+2. **Exact roster** · matches a current `members` row where `active = 1` → use that name
+3. **Fuzzy roster** · `SequenceMatcher` vs the active roster (threshold 0.86). On a hit, the
+   alias is saved to `name_corrections` so it resolves instantly next scan.
+4. **Unmatched** · accepted as-is, added to the `uncertain` list. `save_snapshot()` creates the
+   member with `pending = 1`, and `scraper.py` prints a `REVIEW_NAMES:` line that the bot turns
+   into a Discord warning. The member is then approved or merged via the bot's `/review`.
+
+Because resolution targets the canonical roster (not raw snapshot history), confident matches
+reuse the existing `member_id` and no duplicate row is ever created.
 
 ### last_seen_approx
 
@@ -277,9 +312,9 @@ This absolute value is what the inactivity alert queries against, since relative
         -> parser.py: OCR results -> [Member, ...]
         -> _process_screen(): deduplicate into all_members list
     -> db.py: validate_names(all_members)
-        -> name_corrections lookup -> fuzzy match -> save corrections
-    -> db.py: save_snapshot(all_members)
-        -> weekly upsert -> guild.db updated
+        -> resolve into roster: alias -> exact -> fuzzy -> else flag pending
+    -> db.py: save_snapshot(all_members, pending_names)
+        -> weekly upsert (pending reads inserted with pending=1) -> guild.db updated
     -> bot: post-scan inactivity alert if anyone 3+ days inactive
 ```
 

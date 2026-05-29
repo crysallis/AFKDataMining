@@ -30,9 +30,12 @@ Shared with bot at `C:\vscode\AFKDataMining\guild.db`.
 - Game shows `86329K` or `102M` depending on magnitude · store the K number as-is
 
 ## validate_names() Return Value
-Returns `tuple[list[Member], list[str]]` · second element is names that fell through
-to the EOFError path (accepted as-is, unverified). Scraper prints `REVIEW_NAMES: name1, name2`
-if any exist · bot picks this up and posts a warning in Discord.
+Returns `tuple[list[Member], list[str]]` · resolves each read into the canonical active
+roster (alias → exact → fuzzy@0.86) so noisy OCR never creates duplicate members. The second
+element is names that matched nothing · `save_snapshot(members, pending_names=...)` inserts those
+with `pending = 1`, and the scraper prints `REVIEW_NAMES: name1, name2` so the bot posts a Discord
+warning. **Non-interactive** · no `input()` prompt (old EOFError path removed). Approve/merge
+pending members via the bot's `/review` or admin Members tab.
 
 ## Navigation
 - Scraper navigates screen-aware: detects current screen, routes back to guild home
