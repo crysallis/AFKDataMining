@@ -16,8 +16,10 @@ CAPTURE GUIDE  (1080x1920 resolution, estimated coords - verify via debug run)
   buffer; a Windows screenshot of the window gives wrong scaled coordinates.
 
   === Navigate to World or Homestead overview first ===
-  python src/capture_template.py overview_joystick  420 1430 580 1555
   python src/capture_template.py guild_button        695 1785 865 1875
+  # Press Back at the overview to raise "Exit game?", then capture its No button.
+  # This is the navigation root landmark (navigate_home relies on it).
+  python src/capture_template.py popup_cancel        <x1> <y1> <x2> <y2>
 
   === Navigate to Guild home screen first ===
   python src/capture_template.py guild_home_indicator  900  20 1075  90

@@ -141,10 +141,13 @@ def find_template(screen, template_path, threshold=0.75):
 
 ```text
 Repeat up to flow_attempts (3):
-    navigate_home()  -> press Back / tap UI-back until a known screen, dismissing
-                        popups (e.g. "Exit game?") instead of backing into them
-    already at members?  return
-    at overview?  _tap_to_reach(guild_button -> guild_home)
+    navigate_home():
+        already at guild members / guild home?  return that (don't back out)
+        else press Back until the "Exit game?" dialog appears — that dialog is
+        the reliable "we're at the overview/root" landmark — then dismiss it (No)
+        and report 'overview'
+    at members?    return
+    at overview?   _tap_to_reach(guild_button -> guild_home)
     at guild home? _tap_to_reach(guild_banner -> guild_members)  -> return
     (any step fails -> re-home and try the whole path again)
 On exhaustion: save debug_nav_fail.png and raise RuntimeError
@@ -162,11 +165,13 @@ If template matching can't find a UI element, hardcoded fallback coordinates are
 
 | File | What it detects |
 | --- | --- |
-| `overview_joystick.png` | Home/overworld screen (the joystick HUD) |
+| `popup_cancel.png` | The "Exit game?" dialog's No/stay button · **navigation root landmark** (replaces the joystick) and used to dismiss the dialog |
 | `guild_button.png` | Guild entry in the overworld UI |
 | `guild_home_indicator.png` | Guild home screen (the admin/settings icon) |
 | `guild_banner.png` | The Members row in the guild home list |
 | `guild_members_indicator.png` | The column headers on the member list |
+
+`overview_joystick.png` is no longer used — it matched marginally (~0.76 vs a 0.75 threshold) and appears on multiple screens, so it couldn't reliably identify the overview. The "Exit game?" dialog (`popup_cancel`, ~0.99) is the dependable root signal instead.
 
 ---
 

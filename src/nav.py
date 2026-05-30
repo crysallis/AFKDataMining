@@ -25,10 +25,10 @@ TEMPLATES_DIR = Path(__file__).parent / "templates"
 _GUILD_BTN_XY = (780, 1830)
 _GUILD_BANNER_XY = (120, 57)
 
-# Templates that, if visible, mean a modal/popup is blocking navigation. Capture
-# these with capture_template.py (e.g. the "No"/stay button of the "Exit game?"
-# dialog). Missing ones are simply skipped — the retry logic still recovers.
-_POPUP_DISMISS = ("popup_cancel", "popup_close")
+# Templates that, if visible, mean a modal/popup is blocking a forward tap.
+# `popup_cancel` (the "Exit game?" No/stay button) doubles as the root landmark
+# in navigate_home. Add more here (captured via capture_template.py) as needed.
+_POPUP_DISMISS = ("popup_cancel",)
 
 _TEMPLATE_CACHE: dict[str, np.ndarray | None] = {}
 
@@ -90,9 +90,14 @@ def _wait_until_stable(timeout: float = 4.0, poll: float = 0.4) -> np.ndarray:
     return prev
 
 
-def _is_at_overview(screen: np.ndarray) -> bool:
-    """World or Homestead overview: look for the D-pad joystick."""
-    return find_template(screen, _t("overview_joystick"), threshold=0.75) is not None
+def _find_exit_popup(screen: np.ndarray) -> tuple[int, int] | None:
+    """Locate the 'Exit game?' dialog's dismiss (No/stay) button.
+
+    This dialog is our reliable 'at the root / main screen' landmark: it only
+    appears when Back is pressed at a top-level screen, and it matches ~0.99 —
+    far more reliable than the overview joystick (marginal, and also shown on
+    other screens like guild home, so it can't identify the overview anyway)."""
+    return find_template(screen, _t("popup_cancel"), threshold=0.80)
 
 
 def _is_at_guild_home(screen: np.ndarray) -> bool:
@@ -161,10 +166,13 @@ def _tap_to_reach(locate, is_there, label: str, fallback_xy, attempts: int = 5) 
 
 
 def navigate_home(max_attempts: int = 25) -> str | None:
-    """Press Back until a known screen is detected. Dismisses blocking popups
-    (e.g. the 'Exit game?' dialog triggered by backing up too far) rather than
-    backing into them. Returns 'guild_members' | 'guild_home' | 'overview', or
-    None if exhausted."""
+    """Back up to a main screen, using the 'Exit game?' dialog as the root
+    landmark instead of the (marginal, ambiguous) overview joystick.
+
+    Each step: if we're already at a guild screen, return it (don't back out).
+    Otherwise press Back — and when the Exit dialog appears (we've reached the
+    overview), dismiss it (No) and report 'overview'. Returns
+    'guild_members' | 'guild_home' | 'overview', or None if exhausted."""
     for attempt in range(max_attempts):
         screen = screenshot()
         if _is_at_guild_members(screen):
@@ -173,16 +181,17 @@ def navigate_home(max_attempts: int = 25) -> str | None:
         if _is_at_guild_home(screen):
             logging.debug("Found guild_home after %d back-press(es).", attempt)
             return "guild_home"
-        if _is_at_overview(screen):
-            logging.debug("Found overview after %d back-press(es).", attempt)
+        exit_pos = _find_exit_popup(screen)
+        if exit_pos:
+            tap(*exit_pos)  # dismiss "Exit game?" (No) → lands on the overview
+            logging.info("Reached root via Exit dialog after %d back-press(es); dismissed → overview.", attempt)
+            _wait_until_stable(timeout=2.0)
             return "overview"
-        if _dismiss_popup(screen):
-            continue
         if not _tap_ui_back(screen):
             press_back()
 
-    logging.error("Could not reach a known screen after %d attempts.", max_attempts)
-    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_overview_fail.png"), screenshot())
+    logging.error("Could not reach a main screen (no Exit dialog seen) after %d attempts.", max_attempts)
+    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail.png"), screenshot())
     return None
 
 
