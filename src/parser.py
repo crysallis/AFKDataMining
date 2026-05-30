@@ -4,6 +4,13 @@ from dataclasses import dataclass
 TIME_RE = re.compile(r"^(\d+[smhd]\s*ago|online)$", re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
 SKIP_NAMES = {"Friends", "Guild Announcement", "Me", "Fellowship", "Activeness", "Descending", "Warband"}
+SKIP_LOWER = {s.lower() for s in SKIP_NAMES}
+
+
+def _is_skip_label(t: str) -> bool:
+    """True for known emblem/UI labels, tolerant of OCR noise around them
+    (e.g. the 'Friends' emblem misread as '1Friends' or 'Friends.')."""
+    return re.sub(r"^[^a-zA-Z]+|[^a-zA-Z]+$", "", t).lower() in SKIP_LOWER
 
 
 @dataclass
@@ -41,7 +48,7 @@ def parse_members(ocr_results: list) -> list[Member]:
         # Name: left side, within 40px of timestamp y
         name_candidates = [
             t for _, _, t in _find_near_y(blocks, ts_y, 40, x_min=90, x_max=500)
-            if t not in SKIP_NAMES
+            if not _is_skip_label(t)
             and not t.startswith("Guild Member")
             and not TIME_RE.match(t)
             and not POWER_RE.search(t)
