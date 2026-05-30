@@ -13,6 +13,7 @@ class Member:
     combat_power: str
     activeness: int
     warband: str = ''
+    warband_id: int | None = None
 
 
 def _parse_blocks(ocr_results: list) -> list[tuple[int, int, str]]:

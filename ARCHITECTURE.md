@@ -244,10 +244,16 @@ snapshots           One row per week. scraped_at updated on each scan.
 members             One row per player (canonical roster). discord_id links to Discord.
                     active = present in latest scan. pending = 1 when a read could not be
                     confidently matched to an existing member (awaiting bot /review).
-member_snapshots    One row per member per snapshot. All scraped stats incl. warband.
+member_snapshots    One row per member per snapshot. Stats incl. warband (text) + warband_id.
+warbands            Canonical warband list (id, name UNIQUE, sort_order, archived).
+                    members.warband_id = current warband; member_snapshots.warband_id = per-scan.
 name_corrections    Maps OCR'd names to canonical names. Persists across scans.
 member_name_history Audit log of /rename and merge operations from the bot.
 ```
+
+Warband reads are resolved into the `warbands` table by `_resolve_warband()` (alias → exact →
+fuzzy), mirroring the member-name resolution. A blank/unreadable warband falls back to the
+member's known current warband so scans never drop people to "no warband".
 
 ### Weekly upsert logic
 

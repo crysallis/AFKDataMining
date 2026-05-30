@@ -63,12 +63,21 @@ def init_db() -> None:
                 correct_name TEXT NOT NULL,
                 source       TEXT NOT NULL DEFAULT 'ocr'
             );
+
+            CREATE TABLE IF NOT EXISTS warbands (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                archived    INTEGER NOT NULL DEFAULT 0
+            );
         """)
         # Migrations
         for ddl in (
             "ALTER TABLE member_snapshots ADD COLUMN warband TEXT NOT NULL DEFAULT ''",
             "ALTER TABLE members ADD COLUMN active INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE members ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE member_snapshots ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
+            "ALTER TABLE members ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
         ):
             try:
                 conn.execute(ddl)
@@ -76,6 +85,10 @@ def init_db() -> None:
             except Exception as e:
                 if "duplicate column" not in str(e):
                     print(f"[DB migration] {e}")
+        # Seed known warbands (idempotent)
+        for i, name in enumerate(SEED_WARBANDS):
+            conn.execute("INSERT OR IGNORE INTO warbands (name, sort_order) VALUES (?, ?)", (name, i))
+        conn.commit()
 
 
 def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
@@ -91,28 +104,33 @@ def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
     return scraped_at - delta
 
 
-KNOWN_WARBANDS = ("RKF RiffRaff", "RKF Kings", "Sobaquitos")
-# Hard OCR misreads that fuzzy matching can't catch · keys are lowercase
+SEED_WARBANDS = ("RKF RiffRaff", "RKF Kings", "Sobaquitos")
+# Hard OCR misreads fuzzy matching can't catch · keys are lowercase → canonical name
 WARBAND_ALIASES = {"dkekinos": "RKF Kings"}
 
 
-def _canon_warband(w: str) -> str:
-    """Snap an OCR'd warband to the nearest known warband (e.g. 'Sobaguitos' -> 'Sobaquitos').
-    Leaves it untouched if empty or no close match · edit KNOWN_WARBANDS/WARBAND_ALIASES as needed."""
-    if not w:
-        return w
-    low = w.lower()
+def _resolve_warband(conn: sqlite3.Connection, text: str) -> tuple[str, int | None]:
+    """Resolve an OCR'd warband to (canonical_name, warband_id) using the warbands
+    table: alias → exact → fuzzy (0.8). Unknown reads keep their text with id=None so
+    a genuinely new in-game warband surfaces for the admin to add rather than guessing."""
+    if not text:
+        return "", None
+    rows = conn.execute("SELECT id, name FROM warbands WHERE archived = 0").fetchall()
+    known = {r["name"].lower(): (r["id"], r["name"]) for r in rows}
+    low = text.lower()
     if low in WARBAND_ALIASES:
-        return WARBAND_ALIASES[low]
-    for k in KNOWN_WARBANDS:
-        if k.lower() == low:
-            return k
-    best, score = w, 0.0
-    for k in KNOWN_WARBANDS:
-        r = SequenceMatcher(None, low, k.lower()).ratio()
+        low = WARBAND_ALIASES[low].lower()
+    if low in known:
+        wid, name = known[low]
+        return name, wid
+    best, score = None, 0.0
+    for k, (wid, name) in known.items():
+        r = SequenceMatcher(None, low, k).ratio()
         if r > score:
-            best, score = k, r
-    return best if score >= 0.8 else w
+            best, score = (name, wid), r
+    if best and score >= 0.8:
+        return best
+    return text, None
 
 
 def _parse_power_value(power: str) -> float:
@@ -148,10 +166,11 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
     scraped_at_str = scraped_at.isoformat()
     week_start = _current_week_start()
     pending_names = pending_names or set()
-    for m in members:
-        m.warband = _canon_warband(m.warband)
 
     with _connect() as conn:
+        for m in members:
+            m.warband, m.warband_id = _resolve_warband(conn, m.warband)
+
         existing = conn.execute(
             "SELECT id FROM snapshots WHERE scraped_at >= ? ORDER BY id DESC LIMIT 1",
             (week_start,),
@@ -175,7 +194,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                     conn.execute(
                         """UPDATE member_snapshots
                            SET name = ?, last_active = ?, last_seen_approx = ?,
-                               combat_power = ?, combat_power_value = ?, activeness = ?, warband = ?
+                               combat_power = ?, combat_power_value = ?, activeness = ?,
+                               warband = ?, warband_id = ?
                            WHERE snapshot_id = ? AND member_id = ?""",
                         (
                             m.name,
@@ -185,6 +205,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             _parse_power_value(m.combat_power),
                             m.activeness,
                             m.warband,
+                            m.warband_id,
                             snapshot_id,
                             member_id,
                         ),
@@ -193,8 +214,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                     conn.execute(
                         """INSERT INTO member_snapshots
                            (snapshot_id, member_id, name, last_active, last_seen_approx,
-                            combat_power, combat_power_value, activeness, warband)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            combat_power, combat_power_value, activeness, warband, warband_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             snapshot_id,
                             member_id,
@@ -205,6 +226,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             _parse_power_value(m.combat_power),
                             m.activeness,
                             m.warband,
+                            m.warband_id,
                         ),
                     )
         else:
@@ -216,8 +238,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             conn.executemany(
                 """INSERT INTO member_snapshots
                    (snapshot_id, member_id, name, last_active, last_seen_approx,
-                    combat_power, combat_power_value, activeness, warband)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    combat_power, combat_power_value, activeness, warband, warband_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         snapshot_id,
@@ -231,6 +253,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         _parse_power_value(m.combat_power),
                         m.activeness,
                         m.warband,
+                        m.warband_id,
                     )
                     for m in members
                 ],
@@ -247,6 +270,31 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             placeholders = ','.join('?' * len(scanned_ids))
             conn.execute(f'UPDATE members SET active = 1 WHERE id IN ({placeholders})', scanned_ids)
             conn.execute(f'UPDATE members SET active = 0 WHERE id NOT IN ({placeholders})', scanned_ids)
+
+        # Sync each member's current warband from this scan — only when read (non-null),
+        # so a blank/unreadable warband never wipes a known one (manual overrides persist).
+        conn.execute(
+            """UPDATE members SET warband_id = (
+                   SELECT ms.warband_id FROM member_snapshots ms
+                   WHERE ms.member_id = members.id AND ms.snapshot_id = ? AND ms.warband_id IS NOT NULL)
+               WHERE id IN (
+                   SELECT member_id FROM member_snapshots
+                   WHERE snapshot_id = ? AND warband_id IS NOT NULL)""",
+            (snapshot_id, snapshot_id),
+        )
+        # Blank fallback — fill this scan's unread warbands from the member's known current
+        # warband so /guild views stay continuous instead of dropping people to "no warband".
+        conn.execute(
+            """UPDATE member_snapshots
+               SET warband_id = (SELECT warband_id FROM members WHERE members.id = member_snapshots.member_id),
+                   warband    = COALESCE((SELECT w.name FROM warbands w
+                                          JOIN members mm ON mm.warband_id = w.id
+                                          WHERE mm.id = member_snapshots.member_id), '')
+               WHERE snapshot_id = ?
+                 AND (warband_id IS NULL OR warband = '')
+                 AND (SELECT warband_id FROM members WHERE members.id = member_snapshots.member_id) IS NOT NULL""",
+            (snapshot_id,),
+        )
 
     return snapshot_id
 
