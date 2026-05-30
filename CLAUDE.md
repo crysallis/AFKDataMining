@@ -24,6 +24,12 @@ Window screenshots are scaled/different pixel space · templates will not match.
 ## Database
 Shared with bot at `C:\vscode\AFKDataMining\guild.db`.
 
+Warbands are normalized: `warbands` table (canonical) + `warband_id` FK on `members` (current
+warband) and `member_snapshots` (per-scan). `_resolve_warband()` snaps OCR reads to a warband id
+(alias → exact → fuzzy); blank/unread warbands fall back to the member's known current warband.
+`members.warband` text is kept in sync for display. Edit `SEED_WARBANDS`/`WARBAND_ALIASES` in
+`db.py` for new warbands the scraper should recognize (or add via the bot admin panel).
+
 ### Power Value Convention
 - Stored text: `"86329K"` (verbatim game display)
 - Stored numeric: `float(86329 * 1000)` = 86329000.0
