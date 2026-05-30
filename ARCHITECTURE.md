@@ -137,25 +137,26 @@ def find_template(screen, template_path, threshold=0.75):
 
 ### Navigation path
 
-`navigate_to_guild_members()` is screen-aware · it checks the current state before deciding what to do, so it handles any starting condition without unnecessary back-navigation:
+`navigate_to_guild_members()` is screen-aware and **self-correcting** · it checks the current state before each action and retries the whole path (re-homing between tries) so a stalled tap or a popup doesn't abort the scan:
 
 ```text
-Check current screen
-    -> already at guild members list?  return immediately
-    -> already at guild home?          skip to banner tap
-    -> anywhere else?
-        -> press BACK (Android keyevent 4) up to 15 times until overview detected
-        -> tap guild_button (template match, fallback coords 780, 1830)
-        -> sleep 2.5s  (game has a loading transition after tapping Guild)
-        -> poll up to 20 times x 0.5s for guild_home_indicator to appear
-           (on failure: saves debug_guild_home_fail.png and raises RuntimeError)
-    -> tap guild_banner (template match, fallback coords 120, 57)
-    -> poll up to 15 times x 0.5s for guild_members_indicator to appear
+Repeat up to flow_attempts (3):
+    navigate_home()  -> press Back / tap UI-back until a known screen, dismissing
+                        popups (e.g. "Exit game?") instead of backing into them
+    already at members?  return
+    at overview?  _tap_to_reach(guild_button -> guild_home)
+    at guild home? _tap_to_reach(guild_banner -> guild_members)  -> return
+    (any step fails -> re-home and try the whole path again)
+On exhaustion: save debug_nav_fail.png and raise RuntimeError
 ```
 
-The 2.5s sleep after tapping Guild is intentional · the game plays a brief loading animation before the Admin button (the `guild_home_indicator` template target) is rendered. Polling too early during this window causes false negatives even when the template is correct.
+`_tap_to_reach(locate, is_there, …)` is the core resilience primitive. For each of up to 5 attempts it: **dismisses any blocking popup first**, taps the located button (or a fallback coord), **waits for the screen to settle** (`_wait_until_stable` — polls until pixels stop changing, replacing fixed sleeps so variable load times don't cause false negatives), then checks for the target. If the screen **didn't change at all**, the tap likely never registered → it re-taps. This directly fixes the failure where the "Exit game?" dialog (from backing up too far) swallowed a Guild tap.
 
-If template matching fails to find a UI element, hardcoded fallback coordinates are used · this handles cases where the template confidence is below threshold but the element is still in its expected position.
+**Popup handling:** `_dismiss_popup()` looks for known modal templates (`popup_cancel`, `popup_close` — capture the "No"/stay button of the exit dialog). Missing templates are skipped gracefully; the dialog also closes on Back, so navigation still recovers without them.
+
+**Match confidence** is now logged at DEBUG for every `find_template` call (`match <name> <score> / <threshold>`), so `scraper.log` shows exactly how confident — or marginal — each identification is. Use that to decide whether a template needs recapturing larger/cleaner.
+
+If template matching can't find a UI element, hardcoded fallback coordinates are used · this handles cases where confidence is below threshold but the element is in its expected position. The back-press is routed through `device.py` (`back()`), so it gets the same ADB watchdog as every other command.
 
 ### Templates
 

@@ -127,6 +127,11 @@ def tap(x: int, y: int) -> None:
     _shell(f"input tap {x} {y}", timeout=5.0)
 
 
+def back() -> None:
+    """Android Back (keyevent 4), routed through the watchdog'd ADB layer."""
+    _shell("input keyevent 4", timeout=5.0)
+
+
 def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
     _shell(f"input swipe {x1} {y1} {x2} {y2} {duration_ms}", timeout=5.0)
 
