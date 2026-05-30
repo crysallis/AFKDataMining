@@ -122,14 +122,13 @@ def _tap_ui_back(screen: np.ndarray) -> bool:
 
 
 def _dismiss_popup(screen: np.ndarray) -> bool:
-    """If a known blocking popup is visible (e.g. 'Exit game?'), tap to dismiss it.
-    Returns True if something was dismissed. The exit dialog also closes on Back,
-    so even without a template the back-press fallback clears it."""
+    """If a known blocking popup is visible (e.g. 'Exit game?'), dismiss it with
+    Back — this game's exit dialog closes on Back, not on a tap on the button.
+    Returns True if one was dismissed."""
     for name in _POPUP_DISMISS:
-        pos = find_template(screen, _t(name), threshold=0.80)
-        if pos:
-            tap(*pos)
-            logging.info("Dismissed popup via '%s' at %s.", name, pos)
+        if find_template(screen, _t(name), threshold=0.80):
+            logging.info("Popup '%s' visible — dismissing via Back.", name)
+            press_back()
             _wait_until_stable(timeout=2.0)
             return True
     return False
@@ -181,10 +180,9 @@ def navigate_home(max_attempts: int = 25) -> str | None:
         if _is_at_guild_home(screen):
             logging.debug("Found guild_home after %d back-press(es).", attempt)
             return "guild_home"
-        exit_pos = _find_exit_popup(screen)
-        if exit_pos:
-            tap(*exit_pos)  # dismiss "Exit game?" (No) → lands on the overview
-            logging.info("Reached root via Exit dialog after %d back-press(es); dismissed → overview.", attempt)
+        if _find_exit_popup(screen):
+            press_back()  # one more Back clears the "Exit game?" dialog → overview
+            logging.info("Reached root via Exit dialog after %d back-press(es); cleared with Back → overview.", attempt)
             _wait_until_stable(timeout=2.0)
             return "overview"
         if not _tap_ui_back(screen):
