@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 
 TIME_RE = re.compile(r"^(\d+[smhd]\s*ago|online)$", re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
@@ -9,8 +10,17 @@ SKIP_LOWER = {s.lower() for s in SKIP_NAMES}
 
 def _is_skip_label(t: str) -> bool:
     """True for known emblem/UI labels, tolerant of OCR noise around them
-    (e.g. the 'Friends' emblem misread as '1Friends' or 'Friends.')."""
-    return re.sub(r"^[^a-zA-Z]+|[^a-zA-Z]+$", "", t).lower() in SKIP_LOWER
+    (e.g. the 'Friends' emblem misread as '1Friends' or 'Friends.') and of
+    clipped characters (e.g. the 'F' dropped → 'riends'). Exact match first,
+    then a gated fuzzy fallback (len >= 4, ratio >= 0.8) so a mangled emblem
+    label is skipped without risking real names (shortest roster names score
+    well below 0.5 against any label)."""
+    cleaned = re.sub(r"^[^a-zA-Z]+|[^a-zA-Z]+$", "", t).lower()
+    if cleaned in SKIP_LOWER:
+        return True
+    if len(cleaned) >= 4:
+        return any(SequenceMatcher(None, cleaned, s).ratio() >= 0.8 for s in SKIP_LOWER)
+    return False
 
 
 @dataclass
