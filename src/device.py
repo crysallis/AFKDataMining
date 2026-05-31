@@ -24,15 +24,30 @@ def _get_device() -> adbutils.AdbDevice:
     return _device
 
 
-def _reconnect() -> None:
+def _reconnect(hard: bool = False) -> None:
+    """Re-establish the device connection.
+
+    Soft (default): drop and re-add the device with disconnect/connect. This is
+    the right layer for a wedged BlueStacks bridge — the local adb server is
+    usually fine; it's the device link that's dead.
+    Hard: also kill the local adb server. This force-closes every client socket,
+    which is the only thing that unblocks a screencap thread stranded on a dead
+    socket inside adbutils (a Python thread can't be killed)."""
     global _client, _device
-    print("[ADB] Reconnecting...")
+    print(f"[ADB] Reconnecting{' (hard)' if hard else ''}...")
+    _device = None
     try:
         if _client:
-            _client.server_kill()
+            _client.disconnect(DEVICE)
     except Exception:
         pass
-    time.sleep(1.0)
+    if hard:
+        try:
+            if _client:
+                _client.server_kill()
+        except Exception:
+            pass
+        time.sleep(1.0)
     _client = adbutils.AdbClient(host="127.0.0.1", port=5037)
     _client.server_version()  # starts ADB server if not running
     _client.connect(DEVICE)
@@ -44,7 +59,8 @@ def _run_with_deadline(fn, deadline: float):
     """Run fn() in a worker thread, raising TimeoutError if it blocks past
     `deadline` seconds. adbutils' socket timeout does not reliably interrupt a
     stalled screencap stream, so this wall-clock watchdog is the real guard.
-    A timed-out worker is abandoned (daemon) and its dead socket discarded."""
+    A timed-out worker is abandoned (daemon); its socket stays stuck until a
+    hard reconnect (server_kill) force-closes it — see _reconnect(hard=True)."""
     box: dict = {}
 
     def worker():
@@ -68,8 +84,6 @@ def _shell(cmd, stream=False, timeout=10.0):
     global _device
     last_exc = None
     for attempt in range(4):
-        if attempt == 2:
-            _reconnect()
         try:
             d = _get_device()
 
@@ -83,7 +97,14 @@ def _shell(cmd, stream=False, timeout=10.0):
         except Exception as e:
             last_exc = e
             print(f"[ADB] shell {cmd!r} attempt {attempt+1} failed: {e}")
-            _device = None  # drop the (possibly hung) handle so next attempt reconnects
+            if attempt < 3:
+                # Recover before the next try: soft reconnect first, escalate to
+                # a hard (server-killing) reconnect if a soft one didn't take.
+                try:
+                    _reconnect(hard=attempt >= 1)
+                except Exception as re:
+                    print(f"[ADB] reconnect failed: {re}")
+                    _device = None
             time.sleep(0.5)
     raise RuntimeError(f"ADB shell failed after 4 attempts: {last_exc}")
 
