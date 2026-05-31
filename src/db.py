@@ -78,6 +78,7 @@ def init_db() -> None:
             "ALTER TABLE members ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE member_snapshots ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
             "ALTER TABLE members ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
+            "ALTER TABLE members ADD COLUMN last_scanned_at TEXT",
         ):
             try:
                 conn.execute(ddl)
@@ -171,6 +172,13 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
         for m in members:
             m.warband, m.warband_id = _resolve_warband(conn, m.warband)
 
+        # Resolve every member to an id once, so we know exactly who was read in
+        # THIS scan (not the week-union of member_snapshots rows).
+        member_ids = [
+            _get_or_create_member(conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0)
+            for m in members
+        ]
+
         existing = conn.execute(
             "SELECT id FROM snapshots WHERE scraped_at >= ? ORDER BY id DESC LIMIT 1",
             (week_start,),
@@ -182,10 +190,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                 "UPDATE snapshots SET scraped_at = ?, member_count = ? WHERE id = ?",
                 (scraped_at_str, len(members), snapshot_id),
             )
-            for m in members:
-                member_id = _get_or_create_member(
-                    conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0
-                )
+            for m, member_id in zip(members, member_ids):
                 row = conn.execute(
                     "SELECT id FROM member_snapshots WHERE snapshot_id = ? AND member_id = ?",
                     (snapshot_id, member_id),
@@ -243,9 +248,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                 [
                     (
                         snapshot_id,
-                        _get_or_create_member(
-                            conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0
-                        ),
+                        member_id,
                         m.name,
                         m.last_active,
                         _parse_last_seen(m.last_active, scraped_at).isoformat(),
@@ -255,21 +258,22 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         m.warband,
                         m.warband_id,
                     )
-                    for m in members
+                    for m, member_id in zip(members, member_ids)
                 ],
             )
 
-        # Sync active flag — members in this scan are active, everyone else is not
-        scanned_ids = [
-            r[0] for r in conn.execute(
-                'SELECT member_id FROM member_snapshots WHERE snapshot_id = ? AND member_id IS NOT NULL',
-                (snapshot_id,)
-            ).fetchall()
-        ]
-        if scanned_ids:
-            placeholders = ','.join('?' * len(scanned_ids))
-            conn.execute(f'UPDATE members SET active = 1 WHERE id IN ({placeholders})', scanned_ids)
-            conn.execute(f'UPDATE members SET active = 0 WHERE id NOT IN ({placeholders})', scanned_ids)
+        # Sync active flag — only members read in THIS scan are active (latest-scan
+        # only). A member who left shows inactive on the next scan; one found again
+        # auto-reactivates. last_scanned_at records when each was last actually read.
+        current_ids = list(dict.fromkeys(member_ids))  # de-dup, preserve order
+        if current_ids:
+            placeholders = ','.join('?' * len(current_ids))
+            conn.execute(
+                f'UPDATE members SET last_scanned_at = ? WHERE id IN ({placeholders})',
+                [scraped_at_str, *current_ids],
+            )
+            conn.execute(f'UPDATE members SET active = 1 WHERE id IN ({placeholders})', current_ids)
+            conn.execute(f'UPDATE members SET active = 0 WHERE id NOT IN ({placeholders})', current_ids)
 
         # Sync each member's current warband from this scan — only when read (non-null),
         # so a blank/unreadable warband never wipes a known one (manual overrides persist).
@@ -325,9 +329,17 @@ def apply_corrections(members: list[Member]) -> list[Member]:
 
 
 def _get_active_roster() -> set[str]:
-    """Canonical names of currently-active members · the set we resolve OCR reads into."""
+    """Canonical names to resolve OCR reads into · the set of members seen in the
+    latest weekly snapshot. Deliberately NOT `active = 1`: the active flag is now
+    latest-scan-only, so using it would shrink the match pool after a lossy scan
+    and turn a missed-then-misread member into a spurious pending duplicate."""
     with _connect() as conn:
-        rows = conn.execute("SELECT ingame_name FROM members WHERE active = 1").fetchall()
+        rows = conn.execute("""
+            SELECT DISTINCT m.ingame_name
+            FROM members m
+            JOIN member_snapshots ms ON ms.member_id = m.id
+            WHERE ms.snapshot_id = (SELECT MAX(id) FROM snapshots)
+        """).fetchall()
     return {r["ingame_name"] for r in rows}
 
 
