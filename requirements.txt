@@ -9,6 +9,7 @@ opencv-python==4.13.0.92
 packaging==26.2
 pillow==12.2.0
 protobuf==7.35.0
+psutil==7.2.2
 pyclipper==1.4.0
 PyYAML==6.0.3
 rapidocr-onnxruntime==1.2.3

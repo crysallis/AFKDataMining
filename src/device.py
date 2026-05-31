@@ -1,8 +1,8 @@
-import threading
 import time
 import numpy as np
 import cv2
 import adbutils
+import psutil
 
 DEVICE = "127.0.0.1:5555"
 EXPECTED_WIDTH   = 1080
@@ -11,6 +11,19 @@ EXPECTED_DENSITY = 240
 
 _client: adbutils.AdbClient | None = None
 _device: adbutils.AdbDevice | None = None
+
+_last_activity = time.monotonic()  # heartbeat: updated on every successful ADB call
+
+
+def seconds_since_activity() -> float:
+    """Seconds since the last successful ADB command (the scan's progress heartbeat)."""
+    return time.monotonic() - _last_activity
+
+
+def mark_activity() -> None:
+    """Reset the activity heartbeat (call once at scan start)."""
+    global _last_activity
+    _last_activity = time.monotonic()
 
 
 def _get_device() -> adbutils.AdbDevice:
@@ -24,87 +37,81 @@ def _get_device() -> adbutils.AdbDevice:
     return _device
 
 
-def _reconnect(hard: bool = False) -> None:
-    """Re-establish the device connection.
+def _kill_adb_process() -> None:
+    """Kill the adb.exe process at the OS level via psutil.
 
-    Soft (default): drop and re-add the device with disconnect/connect. This is
-    the right layer for a wedged BlueStacks bridge — the local adb server is
-    usually fine; it's the device link that's dead.
-    Hard: also kill the local adb server. This force-closes every client socket,
-    which is the only thing that unblocks a screencap thread stranded on a dead
-    socket inside adbutils (a Python thread can't be killed)."""
+    server_kill() travels through adbutils' own socket, which can itself be
+    wedged; terminating the process from outside cannot hang and always frees
+    it. Mirrors AdbAutoPlayer's _kill_adb_process fallback."""
+    killed = False
+    for proc in psutil.process_iter(["name"]):
+        name = (proc.info.get("name") or "").lower()
+        if name in ("adb", "adb.exe"):
+            try:
+                proc.terminate()
+                proc.wait(timeout=3)
+                killed = True
+            except psutil.NoSuchProcess:
+                killed = True
+            except psutil.TimeoutExpired:
+                proc.kill()
+                killed = True
+            except psutil.AccessDenied:
+                print("[ADB] Access denied killing adb.exe.")
+    if killed:
+        print("[ADB] adb.exe process killed.")
+
+
+kill_adb_process = _kill_adb_process  # public alias for the scan watchdog
+
+
+def _restart_adb_server() -> None:
+    """Restart the adb server and drop the cached client/device.
+
+    Graceful server_kill() first, OS-level process kill as fallback. The next
+    _get_device() rebuilds the client and device from scratch."""
     global _client, _device
-    print(f"[ADB] Reconnecting{' (hard)' if hard else ''}...")
-    _device = None
+    print("[ADB] Restarting adb server...")
     try:
         if _client:
-            _client.disconnect(DEVICE)
+            _client.server_kill()
     except Exception:
-        pass
-    if hard:
-        try:
-            if _client:
-                _client.server_kill()
-        except Exception:
-            pass
-        time.sleep(1.0)
-    _client = adbutils.AdbClient(host="127.0.0.1", port=5037)
-    _client.server_version()  # starts ADB server if not running
-    _client.connect(DEVICE)
-    _device = _client.device(DEVICE)
-    print("[ADB] Reconnected.")
-
-
-def _run_with_deadline(fn, deadline: float):
-    """Run fn() in a worker thread, raising TimeoutError if it blocks past
-    `deadline` seconds. adbutils' socket timeout does not reliably interrupt a
-    stalled screencap stream, so this wall-clock watchdog is the real guard.
-    A timed-out worker is abandoned (daemon); its socket stays stuck until a
-    hard reconnect (server_kill) force-closes it — see _reconnect(hard=True)."""
-    box: dict = {}
-
-    def worker():
-        try:
-            box["value"] = fn()
-        except Exception as e:  # noqa: BLE001
-            box["error"] = e
-
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-    t.join(deadline)
-    if t.is_alive():
-        raise TimeoutError(f"call exceeded {deadline}s wall-clock")
-    if "error" in box:
-        raise box["error"]
-    return box.get("value")
+        _kill_adb_process()
+    _client = None
+    _device = None
+    time.sleep(1.0)
 
 
 def _shell(cmd, stream=False, timeout=10.0):
-    """Run a shell command with a hard wall-clock timeout + retry/reconnect."""
-    global _device
+    """Run a shell command with retry, modeled on AdbAutoPlayer's @adb_retry.
+
+    Calls run synchronously and every connection is context-managed, so a failed
+    or timed-out call closes its socket (and its guest-side screencap process)
+    instead of leaking. Leaked connections were the cause of the screencap
+    death-spiral: each abandoned screencap kept loading the guest, slowing the
+    next until everything timed out.
+
+    Flow: 2 attempts, then restart the adb server + recreate the device, then 2
+    more. adbutils' own per-read socket timeout bounds a stalled call."""
+    global _client, _device, _last_activity
     last_exc = None
     for attempt in range(4):
+        if attempt == 2:
+            _restart_adb_server()
         try:
             d = _get_device()
-
-            def call():
-                if stream:
-                    with d.shell(cmd, stream=True, timeout=timeout) as conn:
-                        return conn.read_until_close(encoding=None)
-                return d.shell(cmd, timeout=timeout)
-
-            return _run_with_deadline(call, timeout + 5.0)
+            with d.shell(cmd, stream=True, timeout=timeout) as conn:
+                enc = None if stream else "utf-8"
+                result = conn.read_until_close(encoding=enc)
+            _last_activity = time.monotonic()  # heartbeat: a call succeeded
+            return result
         except Exception as e:
             last_exc = e
             print(f"[ADB] shell {cmd!r} attempt {attempt+1} failed: {e}")
-            if attempt < 3:
-                # Recover before the next try: soft reconnect first, escalate to
-                # a hard (server-killing) reconnect if a soft one didn't take.
-                try:
-                    _reconnect(hard=attempt >= 1)
-                except Exception as re:
-                    print(f"[ADB] reconnect failed: {re}")
-                    _device = None
+            # Drop BOTH client and device: a wedged client reused for connect()
+            # has no timeout and will hang. Rebuild from scratch next attempt.
+            _client = None
+            _device = None
             time.sleep(0.5)
     raise RuntimeError(f"ADB shell failed after 4 attempts: {last_exc}")
 
@@ -149,7 +156,7 @@ def tap(x: int, y: int) -> None:
 
 
 def back() -> None:
-    """Android Back (keyevent 4), routed through the watchdog'd ADB layer."""
+    """Android Back (keyevent 4), routed through the retrying ADB layer."""
     _shell("input keyevent 4", timeout=5.0)
 
 

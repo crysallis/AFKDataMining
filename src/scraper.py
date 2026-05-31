@@ -1,13 +1,18 @@
 import logging
+import os
 import re
 import sys
+import threading
 import time
 from difflib import SequenceMatcher
 from rapidocr_onnxruntime import RapidOCR
-from device import screenshot, scroll_down, scroll_down_small, scroll_to_top, screen_changed, ensure_resolution
+from device import (screenshot, scroll_down, scroll_down_small, scroll_to_top, screen_changed,
+                    ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
 from nav import navigate_to_guild_members
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
+
+STALL_SECONDS = 120  # abort if no successful ADB call for this long (true hang, not slow)
 
 for _std in (sys.__stdout__, sys.__stderr__):
     try:
@@ -133,55 +138,77 @@ def _scroll_pass(scroll_fn, seen_lower, all_members, total, label, max_scrolls=6
         print(f"{label} hit scroll limit ({max_scrolls}), stopping.")
 
 
+def _start_stall_watchdog(done: threading.Event) -> None:
+    """Abort the scan if no successful ADB call happens for STALL_SECONDS.
+
+    A successful ADB command (device._shell) is the progress heartbeat; a true
+    hang produces none, so the heartbeat goes stale. On stall, kill adb to
+    unblock anything wedged and hard-exit (no partial data to save mid-scan)."""
+    def loop():
+        while not done.wait(5):
+            if seconds_since_activity() > STALL_SECONDS:
+                print(f"[Watchdog] No ADB progress for {STALL_SECONDS}s - aborting.")
+                kill_adb_process()
+                os._exit(1)
+    threading.Thread(target=loop, daemon=True).start()
+
+
 def scrape_guild() -> list[Member]:
     seen_lower: set[str] = set()
     all_members: list[Member] = []
 
-    init_db()
-    ensure_resolution()
-    navigate_to_guild_members()
-    print("Starting scrape...")
-    total = _get_total_members(_ocr(screenshot()))
-    print(f"Target: {total} members")
+    mark_activity()
+    _done = threading.Event()
+    _start_stall_watchdog(_done)
 
-    _scroll_pass(scroll_down, seen_lower, all_members, total, "Pass 1", max_scrolls=150)
+    try:
+        init_db()
+        ensure_resolution()
+        navigate_to_guild_members()
+        print("Starting scrape...")
+        total = _get_total_members(_ocr(screenshot()))
+        print(f"Target: {total} members")
 
-    if len(all_members) < total:
-        print(f"\nSecond pass (missing {total - len(all_members)})...")
-        _scroll_pass(scroll_down_small, seen_lower, all_members, total, "Pass 2", max_scrolls=150)
+        _scroll_pass(scroll_down, seen_lower, all_members, total, "Pass 1", max_scrolls=150)
 
-    # Cleanup pass: fill any members still missing activeness
-    incomplete = [m for m in all_members if m.activeness == 0]
-    if incomplete:
-        names = ", ".join(m.name for m in incomplete)
-        print(f"\nCleanup pass (activeness=0: {names})...")
-        scroll_to_top()
-        no_change_count = 0
-        prev_img = screenshot()
-        while True:
-            img = screenshot()
-            _process_screen(_ocr(img), seen_lower, all_members)
-            if not any(m.activeness == 0 for m in all_members):
-                print("All activeness filled.")
-                break
-            scroll_down_small()
-            time.sleep(1.2)
-            curr_img = screenshot()
-            if not screen_changed(prev_img, curr_img):
-                no_change_count += 1
-                if no_change_count >= 2:
-                    print("Cleanup pass complete.")
+        if len(all_members) < total:
+            print(f"\nSecond pass (missing {total - len(all_members)})...")
+            _scroll_pass(scroll_down_small, seen_lower, all_members, total, "Pass 2", max_scrolls=150)
+
+        # Cleanup pass: fill any members still missing activeness
+        incomplete = [m for m in all_members if m.activeness == 0]
+        if incomplete:
+            names = ", ".join(m.name for m in incomplete)
+            print(f"\nCleanup pass (activeness=0: {names})...")
+            scroll_to_top()
+            no_change_count = 0
+            prev_img = screenshot()
+            while True:
+                img = screenshot()
+                _process_screen(_ocr(img), seen_lower, all_members)
+                if not any(m.activeness == 0 for m in all_members):
+                    print("All activeness filled.")
                     break
-            else:
-                no_change_count = 0
-            prev_img = curr_img
+                scroll_down_small()
+                time.sleep(1.2)
+                curr_img = screenshot()
+                if not screen_changed(prev_img, curr_img):
+                    no_change_count += 1
+                    if no_change_count >= 2:
+                        print("Cleanup pass complete.")
+                        break
+                else:
+                    no_change_count = 0
+                prev_img = curr_img
 
-    all_members, uncertain = validate_names(all_members)
-    snapshot_id = save_snapshot(all_members, pending_names=set(uncertain))
-    print(f"Saved to DB as snapshot #{snapshot_id}.")
-    if uncertain:
-        print(f"REVIEW_NAMES: {', '.join(uncertain)}")
-    return all_members
+        all_members, uncertain = validate_names(all_members)
+        snapshot_id = save_snapshot(all_members, pending_names=set(uncertain))
+        print(f"Saved to DB as snapshot #{snapshot_id}.")
+        if uncertain:
+            print(f"REVIEW_NAMES: {', '.join(uncertain)}")
+        return all_members
+    finally:
+        _done.set()
 
 
 if __name__ == "__main__":
