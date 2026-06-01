@@ -39,7 +39,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.__stdout__), logging.FileHandler('C:/vscode/AFKDataMining/scraper.log', mode='a', encoding='utf-8')],
 )
 
-TOTAL_RE = re.compile(r"Guild Member \((\d+)/(\d+)\)")
+# Header reads "Guild Member (88/90)" = current/capacity. We want the CURRENT
+# count (group 1), not capacity (group 2). Loose: OCR mangles the parens and
+# spaces the slash, so accept "Guild Member 88 / 90", "GuildMember(88/90)", etc.
+TOTAL_RE = re.compile(r"Guild\s*Member\D*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
 engine = RapidOCR()
 
@@ -53,8 +56,8 @@ def _get_total_members(ocr_results) -> int:
     for _, text, _ in ocr_results:
         m = TOTAL_RE.search(text)
         if m:
-            return int(m.group(2))
-    return 90
+            return int(m.group(1))  # current member count, not capacity
+    return 90  # fallback if the header isn't read this frame
 
 
 def _fuzzy_key(name: str, seen_lower: set[str], threshold: float = 0.88) -> str | None:
