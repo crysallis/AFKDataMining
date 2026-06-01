@@ -1,6 +1,6 @@
 # Data Miner · AFK Journey Guild Scraper
 
-Python · ADB (Android Debug Bridge) · OpenCV · pytesseract · SQLite
+Python · ADB (Android Debug Bridge) · OpenCV · RapidOCR (onnxruntime) · SQLite
 
 Scrapes guild roster data from AFK Journey running in BlueStacks, saves to SQLite.
 Companion bot at `C:\vscode\DiscordBotAfkJ`.
@@ -48,6 +48,30 @@ pending members via the bot's `/review` or admin Members tab.
 - 2.5s sleep between nav steps, 20 poll iterations max
 - Saves debug screenshot on nav failure
 - ensure_resolution() enforces 1080x1920 before scraping
+
+## Scrolling & Parsing (tuned constants — don't naively change)
+- **`scroll_down()` swipe `(540,1400 → 540,778, 2200ms)`** advances ~3 of the 4
+  visible member cards (card pitch ~249px). The deliberate 1-card overlap means
+  every card lands fully in some frame; OCR dedup (`_fuzzy_key`) drops the repeat.
+  A bigger swipe drifts via fling momentum and accumulates off-grid (~10 swipes),
+  re-introducing half-card straddle misses. Tuned on-device — re-measure pitch if
+  the card layout changes.
+- **`TOTAL_RE` targets group(1)** of `Guild Member (88/90)` = the CURRENT count,
+  not group(2) capacity (90). Loosened pattern tolerates OCR mangling of the
+  parens/slash. Lets the scrape detect completion ("All members captured").
+- **`PURE_POWER_RE`** (anchored) guards the name slot: a candidate is a power
+  value only if it STARTS as one. The old `POWER_RE.search()` substring match
+  dropped real names containing digits+K/M (e.g. `Ramz78k` matched `78k`).
+
+## ADB reliability
+- `device.py` `_shell` is leak-free: synchronous, context-managed connections;
+  retry 2 → restart adb server (server_kill, psutil kill fallback) → 2 more.
+- A no-progress watchdog in `scraper.py` aborts if no successful ADB call for
+  `STALL_SECONDS` (120) — kills adb and exits rather than hanging.
+- **AdGuard must exclude `C:\platform-tools\adb.exe`** — its loopback filtering
+  throttles the multi-MB screencap transfers and was the root cause of scans
+  degrading from 2-3 min to 20+ min. Do NOT exclude `HD-Player.exe` (unblocks
+  BlueStacks ads).
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.
