@@ -165,11 +165,10 @@ def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
 
 
 def scroll_down() -> None:
-    swipe(540, 1100, 540, 730, 500)
-
-
-def scroll_down_small() -> None:
-    swipe(540, 1050, 540, 800, 500)
+    # One slow swipe that advances exactly 4 member cards. A variable-distance
+    # scroll left cards straddling two screenshots, so a member split across
+    # frames was read on neither and silently missed. Tuned by hand on-device.
+    swipe(540, 900, 540, 50, 2500)
 
 
 def screen_changed(prev: np.ndarray, curr: np.ndarray, threshold: float = 1.5) -> bool:

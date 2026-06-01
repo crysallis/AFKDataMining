@@ -6,7 +6,7 @@ import threading
 import time
 from difflib import SequenceMatcher
 from rapidocr_onnxruntime import RapidOCR
-from device import (screenshot, scroll_down, scroll_down_small, scroll_to_top, screen_changed,
+from device import (screenshot, scroll_down, scroll_to_top, screen_changed,
                     ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
 from nav import navigate_to_guild_members
 from parser import parse_members, Member
@@ -173,7 +173,7 @@ def scrape_guild() -> list[Member]:
 
         if len(all_members) < total:
             print(f"\nSecond pass (missing {total - len(all_members)})...")
-            _scroll_pass(scroll_down_small, seen_lower, all_members, total, "Pass 2", max_scrolls=150)
+            _scroll_pass(scroll_down, seen_lower, all_members, total, "Pass 2", max_scrolls=150)
 
         # Cleanup pass: fill any members still missing activeness
         incomplete = [m for m in all_members if m.activeness == 0]
@@ -189,7 +189,7 @@ def scrape_guild() -> list[Member]:
                 if not any(m.activeness == 0 for m in all_members):
                     print("All activeness filled.")
                     break
-                scroll_down_small()
+                scroll_down()
                 time.sleep(1.2)
                 curr_img = screenshot()
                 if not screen_changed(prev_img, curr_img):
