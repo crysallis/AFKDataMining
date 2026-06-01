@@ -165,10 +165,13 @@ def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:
 
 
 def scroll_down() -> None:
-    # One slow swipe that advances exactly 4 member cards. A variable-distance
-    # scroll left cards straddling two screenshots, so a member split across
-    # frames was read on neither and silently missed. Tuned by hand on-device.
-    swipe(540, 900, 540, 50, 2500)
+    # Advance ~3 member cards per swipe (card pitch ~249px). The 4th card
+    # overlaps into the next frame, so no card is ever cut in both adjacent
+    # screenshots — dedup drops the repeat. A single bigger swipe drifts via
+    # fling momentum (~11-20% overshoot) and accumulates off-grid by ~10 swipes;
+    # this ~620px drag over 2200ms lines up every time. Tuned by hand on-device.
+    # The 1-card overlap + dedup absorbs any residual fling drift under load.
+    swipe(540, 1400, 540, 778, 2200)
 
 
 def screen_changed(prev: np.ndarray, curr: np.ndarray, threshold: float = 1.5) -> bool:
