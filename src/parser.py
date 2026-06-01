@@ -4,6 +4,11 @@ from difflib import SequenceMatcher
 
 TIME_RE = re.compile(r"^(\d+[smhd]\s*ago|online)$", re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
+# Anchored power check for the NAME slot only: a candidate is a power value just
+# when it STARTS as one (e.g. "95708K", "111M", "95708K (Base)"). Using POWER_RE's
+# bare .search() here wrongly rejected real names that merely contain digits+K/M,
+# e.g. "Ramz78k" (matched "78k") — silently dropping that member from every scan.
+PURE_POWER_RE = re.compile(r"^[\d.]+\s*[KM]\b", re.IGNORECASE)
 SKIP_NAMES = {"Friends", "Guild Announcement", "Me", "Fellowship", "Activeness", "Descending", "Warband"}
 SKIP_LOWER = {s.lower() for s in SKIP_NAMES}
 
@@ -61,7 +66,7 @@ def parse_members(ocr_results: list) -> list[Member]:
             if not _is_skip_label(t)
             and not t.startswith("Guild Member")
             and not TIME_RE.match(t)
-            and not POWER_RE.search(t)
+            and not PURE_POWER_RE.match(t)
         ]
         if not name_candidates:
             continue
