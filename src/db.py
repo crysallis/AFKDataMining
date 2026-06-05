@@ -96,9 +96,9 @@ def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
     if last_active.lower() == "online":
         return scraped_at
     m = re.match(r"(\d*)([smhd])\s*ago", last_active, re.IGNORECASE)
-    if not m:
+    if not m or not m.group(1):
         return scraped_at
-    value = int(m.group(1)) if m.group(1) else 1
+    value = int(m.group(1))
     unit = m.group(2).lower()
     delta = {"s": timedelta(seconds=value), "m": timedelta(minutes=value),
              "h": timedelta(hours=value),   "d": timedelta(days=value)}[unit]

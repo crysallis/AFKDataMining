@@ -116,7 +116,7 @@ def parse_members(ocr_results: list) -> list[Member]:
 
         members.append(Member(
             name=name,
-            last_active=ts_text,
+            last_active=ts_text if re.match(r"^\d|^online$", ts_text, re.IGNORECASE) else "Unknown",
             combat_power=combat_power,
             activeness=activeness,
             warband=warband,
