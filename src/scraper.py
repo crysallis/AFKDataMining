@@ -1,3 +1,4 @@
+import cv2
 import logging
 import os
 import re
