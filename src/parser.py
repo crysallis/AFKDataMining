@@ -2,7 +2,7 @@ import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-TIME_RE = re.compile(r"^(\d+[smhd]\s*ago|online)$", re.IGNORECASE)
+TIME_RE = re.compile(r"^(\d*[smhd]\s*ago|online)$", re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
 # Anchored power check for the NAME slot only: a candidate is a power value just
 # when it STARTS as one (e.g. "95708K", "111M", "95708K (Base)"). Using POWER_RE's
