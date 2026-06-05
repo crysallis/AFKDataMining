@@ -46,9 +46,23 @@ TOTAL_RE = re.compile(r"Guild\s*Member\D*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
 engine = RapidOCR()
 
+_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
+
+def _preprocess(img):
+    # CLAHE on luminance: improves local contrast on dark/varied card backgrounds
+    # without blowing out bright areas — helps thin characters like '1' stand out.
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l = _clahe.apply(l)
+    img = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
+    # Mild unsharp mask: sharpens text edges so OCR sees crisper strokes.
+    blur = cv2.GaussianBlur(img, (0, 0), 1.5)
+    return cv2.addWeighted(img, 1.4, blur, -0.4, 0)
+
 
 def _ocr(img):
-    results, _ = engine(img)
+    results, _ = engine(_preprocess(img))
     return results or []
 
 
