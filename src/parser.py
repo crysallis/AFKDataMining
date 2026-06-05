@@ -73,7 +73,14 @@ def parse_members(ocr_results: list) -> list[Member]:
         # Strip leading symbol junk (gender-icon OCR artifacts, decorative
         # brackets). [\W_] is Unicode-aware so it keeps any-script letters —
         # e.g. CJK names like 「ψ」谢霆锋 survive instead of being wiped to ''.
-        name = re.sub(r"^[\W_]+", "", name_candidates[0])
+        # If the icon OCRs as its own separate block before the real name (e.g.
+        # ♀ split from "Sandokai"), stripping it yields "" — try the next candidate
+        # rather than skipping the whole member.
+        name = ""
+        for candidate in name_candidates:
+            name = re.sub(r"^[\W_]+", "", candidate)
+            if name:
+                break
         if not name:
             continue
         # Normalize common OCR digit/letter confusion: l→1 and O→0 when surrounded by digits
