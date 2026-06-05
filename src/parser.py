@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 TIME_RE = re.compile(r"^(\d*[smhd]\s*ago|online)$", re.IGNORECASE)
+
+def _norm_time(t: str) -> str:
+    """Fix common OCR digit/letter confusion in timestamps: 'l' and 'I' are
+    often read instead of '1' (e.g. 'lh ago', 'Id ago' → '1h ago', '1d ago')."""
+    return re.sub(r'^[lI](?=[smhd])', '1', t, flags=re.IGNORECASE)
 POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
 # Anchored power check for the NAME slot only: a candidate is a power value just
 # when it STARTS as one (e.g. "95708K", "111M", "95708K (Base)"). Using POWER_RE's
@@ -56,7 +61,7 @@ def _find_near_y(blocks, target_y, y_tolerance, x_min=0, x_max=9999):
 
 def parse_members(ocr_results: list) -> list[Member]:
     blocks = _parse_blocks(ocr_results)
-    timestamps = [(x, y, t) for x, y, t in blocks if TIME_RE.match(t)]
+    timestamps = [(x, y, _norm_time(t)) for x, y, t in blocks if TIME_RE.match(_norm_time(t))]
 
     members = []
     for ts_x, ts_y, ts_text in timestamps:
