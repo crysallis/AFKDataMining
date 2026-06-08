@@ -94,12 +94,14 @@ rather than passing garbage downstream and crashing the OpenCV internals.
 
 ### Input simulation
 
-Taps and scrolls are sent as ADB shell commands:
+Taps and scrolls go through `_shell()` just like screenshots, so they get the same adbutils watchdog and retry logic:
 
 ```python
-def swipe(x1, y1, x2, y2, duration_ms):
-    subprocess.run(["adb", "shell", "input", "swipe", x1, y1, x2, y2, duration_ms])
+def swipe(x1, y1, x2, y2, duration_ms=500):
+    _shell(f"input swipe {x1} {y1} {x2} {y2} {duration_ms}", timeout=5.0)
 ```
+
+This replaced the old `subprocess.run(["adb", ...])` approach during the ADB recovery rewrite. Routing through `_shell()` means a stalled swipe command is subject to the same wall-clock deadline and reconnect escalation as a hung screencap.
 
 Scroll direction is controlled by swipe direction: down-to-up swipes scroll the list up (toward top), up-to-down swipes scroll down. Two scroll speeds exist: `scroll_down()` (larger jump) for the first pass and `scroll_down_small()` for the cleanup pass.
 
