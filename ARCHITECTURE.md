@@ -247,6 +247,12 @@ Parsing uses regex to identify each field type from the OCR text and associates 
 
 ### Schema
 
+The miner is the single owner of this shared schema · the bot (`DiscordBotAfkJ/utils/db.js`)
+reads and writes these tables but only creates its own bot-only tables (jobs, birthdays,
+recruitment, ...). `init_db()` CREATE statements always reflect the current shape: schema
+changes are ALTERed once against guild.db, then folded into the CREATE · no migration trail
+replayed on load.
+
 ```sql
 snapshots           One row per week. scraped_at updated on each scan.
 members             One row per player (canonical roster). discord_id links to Discord.

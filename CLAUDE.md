@@ -16,7 +16,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | File | Purpose |
 |---|---|
 | `src/scraper.py` | Main entry point · navigates game, captures screen, runs OCR |
-| `src/db.py` | DB helpers · `validate_names()` returns `tuple[list[Member], list[str]]` |
+| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, warbands, name_corrections, member_name_history) · bot creates only its bot-only tables · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` |
 | `src/capture_template.py` | ADB screencap → crop → save template |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
 | `src/templates/` | OpenCV template images · must be captured via ADB |

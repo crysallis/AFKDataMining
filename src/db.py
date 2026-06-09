@@ -23,21 +23,37 @@ def _connect() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """Create the SHARED schema · the miner is the single owner of the scan +
+    member-identity tables (the bot's utils/db.js owns its bot-only tables and
+    never creates these). The CREATE statements always reflect the CURRENT
+    shape: when the schema changes, run the ALTER once against guild.db and
+    fold the column into the CREATE here · no migration trail replayed on load."""
     with _connect() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS snapshots (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                scraped_at  TEXT NOT NULL,
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                scraped_at   TEXT NOT NULL,
                 member_count INTEGER NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS warbands (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,
+                sort_order  INTEGER NOT NULL DEFAULT 0,
+                archived    INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS members (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                ingame_name   TEXT NOT NULL UNIQUE,
-                discord_id    TEXT UNIQUE,
-                discord_name  TEXT,
-                first_seen    TEXT NOT NULL,
-                notes         TEXT
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                ingame_name     TEXT NOT NULL UNIQUE,
+                discord_id      TEXT UNIQUE,
+                discord_name    TEXT,
+                first_seen      TEXT NOT NULL,
+                notes           TEXT,
+                active          INTEGER NOT NULL DEFAULT 0,
+                pending         INTEGER NOT NULL DEFAULT 0,
+                warband_id      INTEGER REFERENCES warbands(id),
+                last_scanned_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS member_name_history (
@@ -58,7 +74,8 @@ def init_db() -> None:
                 combat_power        TEXT NOT NULL,
                 combat_power_value  REAL,
                 activeness          INTEGER NOT NULL,
-                warband             TEXT NOT NULL DEFAULT ''
+                warband             TEXT NOT NULL DEFAULT '',
+                warband_id          INTEGER REFERENCES warbands(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_ms_snapshot ON member_snapshots(snapshot_id);
@@ -70,29 +87,7 @@ def init_db() -> None:
                 correct_name TEXT NOT NULL,
                 source       TEXT NOT NULL DEFAULT 'ocr'
             );
-
-            CREATE TABLE IF NOT EXISTS warbands (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL UNIQUE,
-                sort_order  INTEGER NOT NULL DEFAULT 0,
-                archived    INTEGER NOT NULL DEFAULT 0
-            );
         """)
-        # Migrations
-        for ddl in (
-            "ALTER TABLE member_snapshots ADD COLUMN warband TEXT NOT NULL DEFAULT ''",
-            "ALTER TABLE members ADD COLUMN active INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE members ADD COLUMN pending INTEGER NOT NULL DEFAULT 0",
-            "ALTER TABLE member_snapshots ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
-            "ALTER TABLE members ADD COLUMN warband_id INTEGER REFERENCES warbands(id)",
-            "ALTER TABLE members ADD COLUMN last_scanned_at TEXT",
-        ):
-            try:
-                conn.execute(ddl)
-                conn.commit()
-            except Exception as e:
-                if "duplicate column" not in str(e):
-                    print(f"[DB migration] {e}")
         # Seed known warbands (idempotent)
         for i, name in enumerate(SEED_WARBANDS):
             conn.execute("INSERT OR IGNORE INTO warbands (name, sort_order) VALUES (?, ?)", (name, i))
