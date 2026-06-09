@@ -269,7 +269,7 @@ The week boundary is **Monday 00:00 UTC**, computed fresh at scan time:
 
 ```python
 def _current_week_start():
-    now = datetime.utcnow()
+    now = _utcnow()  # naive UTC via datetime.now(timezone.utc).replace(tzinfo=None)
     monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     return monday.isoformat()
 ```

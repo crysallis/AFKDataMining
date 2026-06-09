@@ -1,6 +1,6 @@
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from parser import Member
@@ -8,10 +8,17 @@ from parser import Member
 DB_PATH = Path(__file__).parent.parent / "guild.db"
 
 
+def _utcnow() -> datetime:
+    """Naive UTC now. datetime.utcnow() is deprecated; .replace(tzinfo=None)
+    keeps stored timestamps byte-identical to the existing naive-ISO format."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -155,15 +162,15 @@ def _get_or_create_member(conn: sqlite3.Connection, name: str, first_seen: str, 
 
 def _current_week_start() -> str:
     """Monday 00:00 UTC as ISO string — equals Sunday 8 PM EDT / 7 PM EST."""
-    now = datetime.utcnow()
+    now = _utcnow()
     monday = (now - timedelta(days=now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
     return monday.isoformat()
 
 
-def save_snapshot(members: list[Member], pending_names: set[str] | None = None) -> int:
-    scraped_at = datetime.utcnow()
+def save_snapshot(members: list[Member], pending_names: set[str] | None = None) -> tuple[int, int]:
+    scraped_at = _utcnow()
     scraped_at_str = scraped_at.isoformat()
     week_start = _current_week_start()
     pending_names = pending_names or set()
@@ -178,6 +185,11 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             _get_or_create_member(conn, m.name, scraped_at_str, 1 if m.name in pending_names else 0)
             for m in members
         ]
+        # Deduplicate here so member_count reflects unique members, not raw OCR reads.
+        # Two OCR reads of the same person (different spellings, same DB id after
+        # validate_names correction) would otherwise inflate the count.
+        current_ids = list(dict.fromkeys(member_ids))
+        actual_count = len(current_ids)
 
         existing = conn.execute(
             "SELECT id FROM snapshots WHERE scraped_at >= ? ORDER BY id DESC LIMIT 1",
@@ -188,7 +200,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             snapshot_id = existing[0]
             conn.execute(
                 "UPDATE snapshots SET scraped_at = ?, member_count = ? WHERE id = ?",
-                (scraped_at_str, len(members), snapshot_id),
+                (scraped_at_str, actual_count, snapshot_id),
             )
             for m, member_id in zip(members, member_ids):
                 row = conn.execute(
@@ -237,7 +249,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
         else:
             cur = conn.execute(
                 "INSERT INTO snapshots (scraped_at, member_count) VALUES (?, ?)",
-                (scraped_at_str, len(members)),
+                (scraped_at_str, actual_count),
             )
             snapshot_id = cur.lastrowid
             conn.executemany(
@@ -265,7 +277,6 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
         # Sync active flag — only members read in THIS scan are active (latest-scan
         # only). A member who left shows inactive on the next scan; one found again
         # auto-reactivates. last_scanned_at records when each was last actually read.
-        current_ids = list(dict.fromkeys(member_ids))  # de-dup, preserve order
         if current_ids:
             placeholders = ','.join('?' * len(current_ids))
             conn.execute(
@@ -300,7 +311,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             (snapshot_id,),
         )
 
-    return snapshot_id
+    return snapshot_id, actual_count
 
 
 # --- Name correction helpers ---
@@ -417,7 +428,7 @@ def get_latest_members() -> list[sqlite3.Row]:
 
 
 def get_inactive_members(days: int = 3) -> list[sqlite3.Row]:
-    cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+    cutoff = (_utcnow() - timedelta(days=days)).isoformat()
     with _connect() as conn:
         return conn.execute("""
             SELECT ms.*

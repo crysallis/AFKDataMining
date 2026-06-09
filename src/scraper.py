@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from difflib import SequenceMatcher
+from pathlib import Path
 from rapidocr_onnxruntime import RapidOCR
 from device import (screenshot, scroll_down, scroll_to_top, screen_changed,
                     ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
@@ -21,7 +22,9 @@ for _std in (sys.__stdout__, sys.__stderr__):
     except Exception:
         pass
 
-_log_fh = open('C:/vscode/AFKDataMining/scraper.log', 'w', encoding='utf-8', buffering=1)
+LOG_PATH = Path(__file__).parent.parent / "scraper.log"
+
+_log_fh = open(LOG_PATH, 'w', encoding='utf-8', buffering=1)
 
 class _Tee:
     def __init__(self, *streams): self.streams = streams
@@ -37,7 +40,7 @@ sys.stderr = _Tee(sys.__stderr__, _log_fh)
 logging.basicConfig(
     level=logging.DEBUG,
     format='[%(name)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.__stdout__), logging.FileHandler('C:/vscode/AFKDataMining/scraper.log', mode='a', encoding='utf-8')],
+    handlers=[logging.StreamHandler(sys.__stdout__), logging.FileHandler(LOG_PATH, mode='a', encoding='utf-8')],
 )
 
 # Header reads "Guild Member (88/90)" = current/capacity. We want the CURRENT
@@ -171,7 +174,7 @@ def _start_stall_watchdog(done: threading.Event) -> None:
     threading.Thread(target=loop, daemon=True).start()
 
 
-def scrape_guild() -> list[Member]:
+def scrape_guild() -> tuple[list[Member], int]:
     seen_lower: set[str] = set()
     all_members: list[Member] = []
 
@@ -220,17 +223,17 @@ def scrape_guild() -> list[Member]:
                 prev_img = curr_img
 
         all_members, uncertain = validate_names(all_members)
-        snapshot_id = save_snapshot(all_members, pending_names=set(uncertain))
+        snapshot_id, actual_count = save_snapshot(all_members, pending_names=set(uncertain))
         print(f"Saved to DB as snapshot #{snapshot_id}.")
         if uncertain:
             print(f"REVIEW_NAMES: {', '.join(uncertain)}")
-        return all_members
+        return all_members, actual_count
     finally:
         _done.set()
 
 
 if __name__ == "__main__":
-    members = scrape_guild()
-    print(f"\nDone. Captured {len(members)} members.")
+    members, actual_count = scrape_guild()
+    print(f"\nDone. Captured {actual_count} members.")
     for m in members:
         print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")

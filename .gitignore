@@ -12,6 +12,7 @@ venv/
 src/screen_debug.png
 src/debug_*.png
 src/topright_debug.png
+src/test_capture.png
 screen_tmp.png
 
 # Live log output
