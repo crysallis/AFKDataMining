@@ -11,6 +11,7 @@ Resilience model:
 """
 import logging
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import cv2
@@ -60,13 +61,40 @@ def find_template(
         return None
     result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(result)
-    logging.debug("match %-22s %.3f / %.2f %s",
-                  template_path.stem, max_val, threshold,
-                  "HIT" if max_val >= threshold else "")
     if max_val >= threshold:
         h, w = tmpl.shape[:2]
-        return (max_loc[0] + w // 2, max_loc[1] + h // 2)
+        center = (max_loc[0] + w // 2, max_loc[1] + h // 2)
+        logging.debug("match %-22s %.3f / %.2f HIT at (%d,%d)",
+                      template_path.stem, max_val, threshold, *center)
+        return center
+    logging.debug("match %-22s %.3f / %.2f", template_path.stem, max_val, threshold)
     return None
+
+
+def find_template_all(
+    screen: np.ndarray,
+    template_path: Path,
+    threshold: float = 0.85,
+    max_matches: int = 50,
+) -> list[tuple[int, int]]:
+    """All (cx, cy) matches above threshold, greedy peak-picking with the
+    template's own footprint suppressed after each hit so one icon doesn't
+    report a cloud of near-duplicate centers. Used for per-row tier icons."""
+    tmpl = _load_template(template_path)
+    if tmpl is None:
+        return []
+    result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
+    h, w = tmpl.shape[:2]
+    out: list[tuple[int, int]] = []
+    while len(out) < max_matches:
+        _, max_val, _, max_loc = cv2.minMaxLoc(result)
+        if max_val < threshold:
+            break
+        out.append((max_loc[0] + w // 2, max_loc[1] + h // 2))
+        y0, y1 = max(0, max_loc[1] - h // 2), max_loc[1] + h // 2 + 1
+        x0, x1 = max(0, max_loc[0] - w // 2), max_loc[0] + w // 2 + 1
+        result[y0:y1, x0:x1] = -1.0
+    return out
 
 
 def press_back(sleep: float = 0.8) -> None:
@@ -149,6 +177,9 @@ def _tap_to_reach(locate, is_there, label: str, fallback_xy, attempts: int = 5) 
         if _dismiss_popup(screen):
             continue  # re-evaluate from a clean screen before tapping
         pos = locate(screen) or fallback_xy
+        if pos is None:
+            logging.error("%s: no template match and no fallback XY — capture the template first.", label)
+            return False
         before = screen
         tap(*pos)
         logging.info("%s: tapped %s (attempt %d/%d).", label, pos, attempt, attempts)
@@ -226,3 +257,177 @@ def navigate_to_guild_members(flow_attempts: int = 3) -> None:
 
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail.png"), screenshot())
     raise RuntimeError(f"Could not reach guild members list after {flow_attempts} attempts.")
+
+
+# --- Game-mode navigation (ranking scans) ---
+#
+# Route for every mode:
+#   overview → tap battle_modes_btn (template) → OCR-find mode card label →
+#   tap card → tap rankings_btn (template) or afk_stages_trophy (AFK Stage) →
+#   arrived at ranking list
+#
+# Only 5 small icon templates needed (vs. one template per step):
+#   battle_modes_btn.png  · bottom-nav diamond icon
+#   rankings_btn.png      · Rankings icon (5 modes)
+#   afk_stages_trophy.png · trophy icon (AFK Stage only)
+#   filter_icon.png       · filter funnel (all modes, no text)
+#   dream_realm_arrow_left.png · date-bar left-page arrow (Dream Realm only)
+
+# Human-readable OCR label on the Battle Modes card for each mode.
+MODE_CARD_LABEL: dict[str, str] = {
+    "dream_realm":   "Dream Realm",
+    "afk_stages":    "AFK Stage",
+    "arena":         "Arena",
+    "supreme_arena": "Supreme Arena",
+    "honor_duel":    "Honor Duel",
+    "arcane_lab":    "Labyrinth",
+}
+
+# All modes use the same rankings circle icon (rankings_btn.png).
+_TROPHY_MODES: set[str] = set()
+
+
+def _ocr_tap_text(
+    ocr_fn,
+    target: str,
+    label: str,
+    threshold: float = 0.75,
+    attempts: int = 5,
+    scroll_between: bool = False,
+) -> bool:
+    """OCR the screen, find a text block matching target (case-insensitive,
+    fuzzy-tolerant), and tap it. Retries up to `attempts` times; optionally
+    scrolls down between tries to reveal off-screen labels."""
+    from device import scroll_down
+    for attempt in range(1, attempts + 1):
+        for box, text, _conf in ocr_fn(screenshot()):
+            from ocr import block_center
+            cx, cy = block_center(box)
+            ratio = SequenceMatcher(None, text.strip().lower(), target.lower()).ratio()
+            if ratio >= 0.82:
+                tap(cx, cy)
+                logging.info("%s: tapped '%s' (matched '%s', ratio=%.2f, attempt %d).",
+                             label, text.strip(), target, ratio, attempt)
+                return True
+        if attempt < attempts:
+            if scroll_between:
+                scroll_down()
+                time.sleep(1.0)
+            else:
+                time.sleep(0.5)
+    logging.warning("%s: text '%s' not found after %d attempts.", label, target, attempts)
+    return False
+
+
+def navigate_to_overview(max_attempts: int = 25) -> bool:
+    """Back all the way up to the overview, confirmed via the 'Exit game?'
+    dialog landmark · mode routes always start from a clean overview."""
+    for attempt in range(max_attempts):
+        screen = screenshot()
+        if _find_exit_popup(screen):
+            press_back()
+            logging.info("Reached overview after %d back-press(es).", attempt)
+            _wait_until_stable(timeout=2.0)
+            return True
+        if not _tap_ui_back(screen):
+            press_back()
+    logging.error("Could not reach overview after %d attempts.", max_attempts)
+    return False
+
+
+def _is_at_battle_modes(screen: np.ndarray) -> bool:
+    """Battle Modes card grid: look for any known mode card label via OCR
+    rather than a template, since the card art changes with seasons."""
+    from ocr import ocr_image
+    for _, text, _ in ocr_image(screen):
+        for label in MODE_CARD_LABEL.values():
+            if SequenceMatcher(None, text.strip().lower(), label.lower()).ratio() >= 0.85:
+                return True
+    return False
+
+
+def navigate_to_mode(mode: str, flow_attempts: int = 3) -> None:
+    """Navigate from any screen to a game mode's ranking list.
+
+    Route:
+      overview → battle_modes_btn → OCR card label (scroll if needed) →
+      rankings_btn / afk_stages_trophy
+    Re-homes and retries the whole path on failure, same as navigate_to_guild_members."""
+    from ocr import ocr_image
+    card_label = MODE_CARD_LABEL[mode]
+    ranking_tmpl = "afk_stages_trophy" if mode in _TROPHY_MODES else "rankings_btn"
+    logging.info("Navigating to %s ranking.", mode)
+
+    for attempt in range(1, flow_attempts + 1):
+        if not navigate_to_overview():
+            logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
+            continue
+
+        # overview → Battle Modes
+        if not _tap_to_reach(
+            lambda s: find_template(s, _t("battle_modes_btn"), threshold=0.75),
+            _is_at_battle_modes, "battle_modes", fallback_xy=None,
+        ):
+            logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
+            continue
+
+        # Battle Modes → mode card (scroll down to find it if off-screen)
+        if not _ocr_tap_text(
+            ocr_image, card_label, f"card:{card_label}",
+            scroll_between=True, attempts=5,
+        ):
+            logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
+            continue
+        _wait_until_stable()
+
+        # mode main screen → ranking list.
+        # Try template first, then OCR "Rankings" text as fallback (handles
+        # modes where the button style differs from the captured template).
+        ranking_visible = find_template(screenshot(), _t(ranking_tmpl), threshold=0.75) is not None
+        if ranking_visible:
+            if not _tap_to_reach(
+                lambda s, t=ranking_tmpl: find_template(s, _t(t), threshold=0.75),
+                lambda s, t=ranking_tmpl: find_template(s, _t(t), threshold=0.75) is None,
+                f"{mode}:{ranking_tmpl}", fallback_xy=None,
+            ):
+                logging.warning("Ranking button tap failed for %s (flow attempt %d).", mode, attempt)
+                continue
+        else:
+            # Template didn't match — try OCR text tap for "Rankings"
+            from ocr import ocr_image
+            if not _ocr_tap_text(ocr_image, "Rankings", f"{mode}:rankings_text", attempts=3):
+                logging.warning("Rankings button not found by template or OCR for %s (flow attempt %d).", mode, attempt)
+                continue
+            _wait_until_stable()
+
+        _wait_until_stable()
+        logging.info("Arrived at %s ranking list.", mode)
+        return
+
+    cv2.imwrite(str(TEMPLATES_DIR.parent / f"debug_nav_fail_{mode}.png"), screenshot())
+    raise RuntimeError(f"Could not reach {mode} ranking after {flow_attempts} attempts.")
+
+
+def apply_guild_filter() -> bool:
+    """Tap the filter icon → wait for popup → OCR-tap 'Guild Members' → wait
+    for popup to close. Shared by all modes. Returns False if either step
+    fails (saves a debug screenshot) · callers decide whether to abort."""
+    from ocr import ocr_image
+    screen = screenshot()
+    pos = find_template(screen, _t("filter_icon"), threshold=0.75)
+    if pos is None:
+        logging.error("filter_icon not found.")
+        cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_filter_fail.png"), screen)
+        return False
+    logging.info("Setting filter to Guild Members: filter icon at %s, tapping.", pos)
+    tap(*pos)
+    _wait_until_stable()
+
+    if not _ocr_tap_text(ocr_image, "Guild Members", "guild_filter_option", attempts=4):
+        logging.error("'Guild Members' option not found in filter popup.")
+        cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_filter_fail.png"), screenshot())
+        return False
+
+    _wait_until_stable()
+    logging.info("Guild filter applied.")
+    return True

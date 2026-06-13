@@ -1,4 +1,5 @@
-import cv2
+import argparse
+import importlib
 import logging
 import os
 import re
@@ -7,7 +8,6 @@ import threading
 import time
 from difflib import SequenceMatcher
 from pathlib import Path
-from rapidocr_onnxruntime import RapidOCR
 from device import (screenshot, scroll_down, scroll_to_top, screen_changed,
                     ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
 from nav import navigate_to_guild_members
@@ -39,7 +39,8 @@ sys.stderr = _Tee(sys.__stderr__, _log_fh)
 
 logging.basicConfig(
     level=logging.DEBUG,
-    format='[%(name)s] %(message)s',
+    format='%(asctime)s %(levelname)-7s %(message)s',
+    datefmt='%H:%M:%S',
     handlers=[logging.StreamHandler(sys.__stdout__), logging.FileHandler(LOG_PATH, mode='a', encoding='utf-8')],
 )
 
@@ -48,26 +49,8 @@ logging.basicConfig(
 # spaces the slash, so accept "Guild Member 88 / 90", "GuildMember(88/90)", etc.
 TOTAL_RE = re.compile(r"Guild\s*Member\D*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
-engine = RapidOCR()
-
-_clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-
-
-def _preprocess(img):
-    # CLAHE on luminance: improves local contrast on dark/varied card backgrounds
-    # without blowing out bright areas — helps thin characters like '1' stand out.
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l = _clahe.apply(l)
-    img = cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
-    # Mild unsharp mask: sharpens text edges so OCR sees crisper strokes.
-    blur = cv2.GaussianBlur(img, (0, 0), 1.5)
-    return cv2.addWeighted(img, 1.4, blur, -0.4, 0)
-
-
-def _ocr(img):
-    results, _ = engine(_preprocess(img))
-    return results or []
+# Import AFTER the logging/Tee setup above so RapidOCR's init logs are captured.
+from ocr import ocr_image as _ocr  # noqa: E402
 
 
 def _get_total_members(ocr_results) -> int:
@@ -168,10 +151,11 @@ def _start_stall_watchdog(done: threading.Event) -> None:
     def loop():
         while not done.wait(5):
             if seconds_since_activity() > STALL_SECONDS:
-                print(f"[Watchdog] No ADB progress for {STALL_SECONDS}s - aborting.")
+                logging.error("Watchdog: no ADB progress for %ds - aborting.", STALL_SECONDS)
                 kill_adb_process()
                 os._exit(1)
     threading.Thread(target=loop, daemon=True).start()
+    logging.info("Watchdog active: aborts if no ADB progress for %ds.", STALL_SECONDS)
 
 
 def scrape_guild() -> tuple[list[Member], int]:
@@ -232,8 +216,39 @@ def scrape_guild() -> tuple[list[Member], int]:
         _done.set()
 
 
+MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab")
+
+
+def run_modes(enabled: list[str]) -> None:
+    """Run each enabled game-mode ranking scan after the guild scan, with its
+    own stall watchdog. One mode failing never blocks the rest · failures are
+    printed as MODE_FAILED lines the bot can surface."""
+    mark_activity()
+    done = threading.Event()
+    _start_stall_watchdog(done)
+    try:
+        for mode in enabled:
+            print(f"\nMode scan: {mode}")
+            try:
+                importlib.import_module(f"modes.{mode}").scan()
+            except Exception as e:
+                print(f"MODE_FAILED: {mode} - {e}")
+                logging.exception("Mode scan %s failed", mode)
+    finally:
+        done.set()
+
+
 if __name__ == "__main__":
+    cli = argparse.ArgumentParser()
+    for _mode in MODES:
+        cli.add_argument(f"--{_mode.replace('_', '-')}", action="store_true")
+    args = cli.parse_args()
+
     members, actual_count = scrape_guild()
     print(f"\nDone. Captured {actual_count} members.")
     for m in members:
         print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")
+
+    enabled = [m for m in MODES if getattr(args, m)]
+    if enabled:
+        run_modes(enabled)

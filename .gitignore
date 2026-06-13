@@ -15,6 +15,10 @@ src/topright_debug.png
 src/test_capture.png
 screen_tmp.png
 
+# Debug artifacts anywhere (root-level images + scratch experiment scripts)
+debug_*.png
+debug_*.py
+
 # Live log output
 scraper.log
 

@@ -51,12 +51,21 @@ def main() -> None:
         print("Open it in an image editor to read off pixel coordinates.")
         return
 
-    if len(sys.argv) != 6:
+    if len(sys.argv) not in (6, 7):
         print(__doc__)
         sys.exit(1)
 
     name = sys.argv[1]
     x1, y1, x2, y2 = int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5])
+
+    # Optionally crop from the saved debug image instead of a fresh ADB shot.
+    # Usage: python capture_template.py <name> x1 y1 x2 y2 [src/screen_debug.png]
+    if len(sys.argv) == 7:
+        src = cv2.imread(sys.argv[6])
+        if src is None:
+            print(f"Error: could not read {sys.argv[6]}")
+            sys.exit(1)
+        screen = src
 
     crop = screen[y1:y2, x1:x2]
     if crop.size == 0:

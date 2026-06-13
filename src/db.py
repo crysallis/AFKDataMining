@@ -87,6 +87,71 @@ def init_db() -> None:
                 correct_name TEXT NOT NULL,
                 source       TEXT NOT NULL DEFAULT 'ocr'
             );
+
+            CREATE TABLE IF NOT EXISTS dream_realm_bosses (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                season     INTEGER,
+                sort_order INTEGER,
+                UNIQUE(name, season)
+            );
+
+            CREATE TABLE IF NOT EXISTS dream_realm_scores (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                member_id   INTEGER NOT NULL REFERENCES members(id),
+                boss_id     INTEGER REFERENCES dream_realm_bosses(id),
+                boss_name   TEXT NOT NULL,
+                scan_date   TEXT NOT NULL,
+                rank        INTEGER,
+                score       TEXT,
+                tier        TEXT,
+                scanned_at  TEXT NOT NULL,
+                UNIQUE(member_id, scan_date)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_drs_date ON dream_realm_scores(scan_date);
+
+            CREATE TABLE IF NOT EXISTS afk_stage_rankings (
+                member_id   INTEGER NOT NULL REFERENCES members(id),
+                season      INTEGER NOT NULL,
+                phase       INTEGER NOT NULL,
+                rank        INTEGER,
+                progress    TEXT,
+                scanned_at  TEXT NOT NULL,
+                PRIMARY KEY (member_id, season, phase)
+            );
+
+            CREATE TABLE IF NOT EXISTS arena_rankings (
+                member_id   INTEGER PRIMARY KEY REFERENCES members(id),
+                rank        INTEGER,
+                points      INTEGER,
+                tier        TEXT,
+                scanned_at  TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS supreme_arena_rankings (
+                member_id    INTEGER NOT NULL REFERENCES members(id),
+                period_start TEXT NOT NULL,
+                rank         INTEGER,
+                scanned_at   TEXT NOT NULL,
+                PRIMARY KEY (member_id, period_start)
+            );
+
+            CREATE TABLE IF NOT EXISTS honor_duel_rankings (
+                member_id    INTEGER PRIMARY KEY REFERENCES members(id),
+                rank         INTEGER,
+                honor_points INTEGER,
+                scanned_at   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS arcane_lab_rankings (
+                member_id   INTEGER PRIMARY KEY REFERENCES members(id),
+                rank        INTEGER,
+                difficulty  INTEGER,
+                floor       INTEGER,
+                points      INTEGER,
+                scanned_at  TEXT NOT NULL
+            );
         """)
         # Seed known warbands (idempotent)
         for i, name in enumerate(SEED_WARBANDS):
@@ -454,3 +519,207 @@ def get_power_history(name: str) -> list[sqlite3.Row]:
             WHERE ms.name = ?
             ORDER BY s.scraped_at ASC
         """, (name,)).fetchall()
+
+
+# --- Game-mode ranking scans ---
+
+# Hard OCR misreads of boss names · keys lowercase → canonical name (same idea as WARBAND_ALIASES)
+BOSS_ALIASES: dict[str, str] = {}
+
+
+def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
+    """Resolve OCR'd names from ranking scans into member ids · alias → exact →
+    fuzzy@0.86 against the same roster validate_names() uses. Returns
+    ({ocr_name: member_id}, unmatched). Unmatched names are NOT created as
+    members (the roster scan owns membership) · callers skip those rows and
+    surface them via REVIEW_NAMES."""
+    corrections = get_corrections()
+    roster = _get_active_roster()
+    with _connect() as conn:
+        id_by_name = {r["ingame_name"].lower(): r["id"]
+                      for r in conn.execute("SELECT id, ingame_name FROM members").fetchall()}
+    resolved: dict[str, int] = {}
+    unmatched: list[str] = []
+    for raw in names:
+        name = corrections.get(raw.lower(), raw)
+        canonical = _roster_exact(name, roster)
+        if canonical is None:
+            canonical = _fuzzy_match_known(name, roster, threshold=0.86)
+            if canonical:
+                save_correction(raw, canonical)
+        if canonical is None and name.lower() in id_by_name:
+            canonical = name  # known member outside the latest snapshot (e.g. pending)
+        if canonical:
+            resolved[raw] = id_by_name[canonical.lower()]
+        else:
+            unmatched.append(raw)
+    return resolved, unmatched
+
+
+def _active_season_id(conn: sqlite3.Connection) -> int | None:
+    """Return the id of the currently active ally_season, or None if not set."""
+    try:
+        row = conn.execute(
+            "SELECT id FROM ally_seasons WHERE active = 1 LIMIT 1"
+        ).fetchone()
+        return row["id"] if row else None
+    except Exception:
+        return None
+
+
+def _resolve_boss(conn: sqlite3.Connection, text: str) -> tuple[str, int | None]:
+    """Resolve an OCR'd Dream Realm boss name: alias → exact → fuzzy (0.8).
+    An unknown boss inserts a new row tied to the active season so it surfaces
+    for admin review · mirrors _resolve_warband()."""
+    if not text:
+        return "", None
+    rows = conn.execute("SELECT id, name FROM dream_realm_bosses").fetchall()
+    low = text.lower()
+    if low in BOSS_ALIASES:
+        low = BOSS_ALIASES[low].lower()
+    for r in rows:
+        if r["name"].lower() == low:
+            return r["name"], r["id"]
+    best, score = None, 0.0
+    for r in rows:
+        s = SequenceMatcher(None, low, r["name"].lower()).ratio()
+        if s > score:
+            best, score = r, s
+    if best and score >= 0.8:
+        return best["name"], best["id"]
+    season_id = _active_season_id(conn)
+    cur = conn.execute(
+        "INSERT INTO dream_realm_bosses (name, season) VALUES (?, ?)",
+        (text, season_id),
+    )
+    return text, cur.lastrowid
+
+
+def get_boss_for_date(today_iso: str, today_boss_id: int,
+                      scan_date: str) -> tuple[str, int | None]:
+    """Return (name, id) of the boss on scan_date, computed from today's boss
+    position in the cycle. Returns ('', None) if sort_order not yet set."""
+    from datetime import date as _date
+    days_back = (_date.fromisoformat(today_iso) - _date.fromisoformat(scan_date)).days
+    if days_back <= 0:
+        return "", None
+    with _connect() as conn:
+        today_row = conn.execute(
+            "SELECT sort_order, season FROM dream_realm_bosses WHERE id = ?",
+            (today_boss_id,),
+        ).fetchone()
+        if not today_row or today_row["sort_order"] is None:
+            return "", None
+        season = today_row["season"]
+        cycle = conn.execute(
+            "SELECT COUNT(*) AS n FROM dream_realm_bosses "
+            "WHERE season = ? AND sort_order IS NOT NULL",
+            (season,),
+        ).fetchone()["n"]
+        if cycle == 0:
+            return "", None
+        target_order = (today_row["sort_order"] - 1 - days_back) % cycle + 1
+        row = conn.execute(
+            "SELECT id, name FROM dream_realm_bosses "
+            "WHERE season = ? AND sort_order = ?",
+            (season, target_order),
+        ).fetchone()
+        if row:
+            return row["name"], row["id"]
+    return "", None
+
+
+def get_missing_dream_realm_days(max_back: int = 3) -> list[str]:
+    """UTC game days (yesterday back to -max_back) with no saved scores yet,
+    newest first. Today's in-progress board is never captured."""
+    today = _utcnow().date()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(1, max_back + 1)]
+    with _connect() as conn:
+        have = {r["scan_date"] for r in conn.execute(
+            "SELECT DISTINCT scan_date FROM dream_realm_scores WHERE scan_date >= ?",
+            (days[-1],)).fetchall()}
+    return [d for d in days if d not in have]
+
+
+def save_dream_realm(entries: list[dict], scan_date: str, boss_name: str,
+                     boss_id: int | None = None) -> int:
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        if boss_id is None:
+            boss_name, boss_id = _resolve_boss(conn, boss_name)
+        conn.executemany(
+            """INSERT OR REPLACE INTO dream_realm_scores
+               (member_id, boss_id, boss_name, scan_date, rank, score, tier, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(e["member_id"], boss_id, boss_name, scan_date,
+              e.get("rank"), e.get("score"), e.get("tier"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_afk_stages(entries: list[dict], season: int, phase: int) -> int:
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO afk_stage_rankings
+               (member_id, season, phase, rank, progress, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [(e["member_id"], season, phase, e.get("rank"), e.get("progress"), scanned_at)
+             for e in entries])
+    return len(entries)
+
+
+def save_arena(entries: list[dict]) -> int:
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO arena_rankings (member_id, rank, points, tier, scanned_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            [(e["member_id"], e.get("rank"), e.get("points"), e.get("tier"), scanned_at)
+             for e in entries])
+    return len(entries)
+
+
+def get_supreme_period() -> str | None:
+    """Supreme Arena runs Wednesday 00:00 UTC → Monday 00:00 UTC and is off
+    Monday + Tuesday (UTC). Returns the current period's Wednesday date as
+    period_start, or None on off-days (skip the scan entirely)."""
+    now = _utcnow()
+    if now.weekday() in (0, 1):
+        return None
+    wednesday = now - timedelta(days=now.weekday() - 2)
+    return wednesday.date().isoformat()
+
+
+def save_supreme_arena(entries: list[dict]) -> int:
+    period = get_supreme_period()
+    if period is None:
+        return 0
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO supreme_arena_rankings
+               (member_id, period_start, rank, scanned_at) VALUES (?, ?, ?, ?)""",
+            [(e["member_id"], period, e.get("rank"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_honor_duel(entries: list[dict]) -> int:
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO honor_duel_rankings
+               (member_id, rank, honor_points, scanned_at) VALUES (?, ?, ?, ?)""",
+            [(e["member_id"], e.get("rank"), e.get("points"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_arcane_lab(entries: list[dict]) -> int:
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO arcane_lab_rankings
+               (member_id, rank, difficulty, floor, points, scanned_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [(e["member_id"], e.get("rank"), e.get("difficulty"), e.get("floor"),
+              e.get("points"), scanned_at) for e in entries])
+    return len(entries)
