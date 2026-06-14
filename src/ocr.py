@@ -1,8 +1,10 @@
 """Shared OCR engines + preprocessing · used by the guild scraper and all
 game-mode ranking scanners.
 
-PP-OCRv3 (rapidocr_onnxruntime) handles general card text.
-PP-OCRv5 (rapidocr) handles calligraphic rank badge fonts v3 misses.
+PP-OCRv5 (rapidocr) is the primary engine: `ocr_image()` tries v5 first and
+falls back to PP-OCRv3 (rapidocr_onnxruntime) only if v5 is unavailable.
+`_scan_rank_column` in modes/common.py uses v5 independently on the color rank
+strip (no preprocessing) to read calligraphic rank badge fonts.
 """
 import logging
 import cv2
@@ -47,7 +49,21 @@ def preprocess(img):
 
 
 def ocr_image(img):
-    results, _ = engine(preprocess(img))
+    preprocessed = preprocess(img)
+    v5 = get_engine_v5()
+    if v5:
+        result = v5(preprocessed)
+        if result is not None:
+            boxes = result.boxes if result.boxes is not None else []
+            txts = result.txts if result.txts is not None else []
+            scores_raw = getattr(result, 'scores', None)
+            scores = scores_raw if scores_raw is not None else [1.0] * len(txts)
+            return [
+                (boxes[i], txts[i], scores[i] if i < len(scores) else 1.0)
+                for i in range(min(len(boxes), len(txts)))
+                if boxes[i] is not None and txts[i]
+            ]
+    results, _ = engine(preprocessed)
     return results or []
 
 

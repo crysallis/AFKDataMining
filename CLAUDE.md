@@ -6,6 +6,18 @@ Scrapes guild roster data from AFK Journey running in BlueStacks, saves to SQLit
 Companion bot at `C:\vscode\DiscordBotAfkJ`.
 See global context at `C:\Users\crysa\.claude\CLAUDE.md`.
 
+## Session Start
+
+On the first message of every conversation, before responding, read these memory files:
+
+- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_afk_datamining.md`
+- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_consensus_scan.md`
+- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_mode_scans.md`
+- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_scraper_stdout_contract.md`
+- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_afk_stages_phase_nav.md`
+
+Then give a brief what's-done / what's-pending summary before starting the task.
+
 ## CRITICAL: Template Capture
 **Always use `src/capture_template.py` to capture templates via ADB screencap.**
 Never screenshot the BlueStacks window directly.
@@ -72,6 +84,12 @@ pending members via the bot's `/review` or admin Members tab.
   throttles the multi-MB screencap transfers and was the root cause of scans
   degrading from 2-3 min to 20+ min. Do NOT exclude `HD-Player.exe` (unblocks
   BlueStacks ads).
+
+## Dead Ends · Do Not Pursue
+
+- **Qwen2-VL** · requires CUDA (NVIDIA) or MPS (Apple). AMD RX 9070 XT has neither · do not investigate. AdbAutoPlayer's installed app also cannot run it on this hardware (falls back to same RapidOCR we already use).
+- **AdbAutoPlayer as a better OCR engine** · on this hardware they run PP-OCRv4 via rapidocr_onnxruntime, same family as ours. Their reliability advantage is **consensus voting** (collect all frames, vote per rank) not the engine. Port the voting approach, not the engine.
+- **AdGuard: excluding `HD-Player.exe`** · unblocks BlueStacks ads but does NOT fix ADB throttling. Always exclude `C:\platform-tools\adb.exe` instead.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.

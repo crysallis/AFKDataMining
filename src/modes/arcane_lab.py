@@ -24,7 +24,7 @@ def _column_values(ocr_results, row_y: int) -> dict[str, int]:
         low = t.lower()
         if low in _COLS:
             headers[low] = cx
-        elif NUM_RE.match(t.replace(",", "")):
+        elif NUM_RE.match(t.replace(",", "")) and cx > 220:
             numbers.append((cx, int(t.replace(",", ""))))
 
     out: dict[str, int] = {}

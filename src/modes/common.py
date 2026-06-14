@@ -12,7 +12,7 @@ import numpy as np
 from device import screenshot, scroll_down, screen_changed
 from nav import TEMPLATES_DIR, find_template_all
 from ocr import ocr_image, block_center, engine, get_engine_v5
-from db import resolve_names
+from db import resolve_names, names_for_ids
 
 # Ranked lists have no known total (1 to all 90 members may place), so the
 # scroll loop ends only on two consecutive unchanged frames.
@@ -47,7 +47,9 @@ def fuzzy_key(name: str, seen_lower: set[str], threshold: float = 0.88) -> str |
 
 def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
                     rank_x_max: int = 220,
-                    extra_skip: set[str] | None = None) -> list[RankRow]:
+                    extra_skip: set[str] | None = None,
+                    list_y_min: int = 0,
+                    value_re: "re.Pattern | None" = None) -> list[RankRow]:
     """Rank-number-anchored parser for ranking list screens.
 
     The large rank number on the far left of each card is the anchor, mirroring
@@ -67,6 +69,25 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
         if t:
             cx, cy = block_center(box)
             blocks.append((cx, cy, t))
+
+    # Auto-detect the winner podium: the top-3 are drawn as heroes side-by-side,
+    # so their name (and guild-tag) blocks share a y-band but spread wide across
+    # x · list rows instead stack name + guild tag at the same x. The podium's
+    # decorative 1/2/3 badges otherwise steal ranks 1-3 from the real list. Start
+    # the parse just below the lowest such band. (Combined with any caller hint.)
+    # Only the upper screen · the footer tabs ('Server/District Rankings') are
+    # also a wide band, but at the bottom; including them would clip the list.
+    _podium_zone = img.shape[0] * 0.45
+    _name_like = [(cx, cy) for cx, cy, t in blocks
+                  if cx > rank_x_max and cy < _podium_zone
+                  and not NUM_RE.match(t.replace(",", "")) and t.lower() not in skip]
+    _podium_y = 0
+    for cx, cy in _name_like:
+        band_xs = [ox for ox, oy in _name_like if abs(oy - cy) <= 50]
+        if len(band_xs) >= 2 and (max(band_xs) - min(band_xs)) > 350:
+            _podium_y = max(_podium_y, cy)
+    if _podium_y:
+        list_y_min = max(list_y_min, _podium_y + 40)
 
     # Compute list start y early so hero-section badge matches can be excluded.
     # Name blocks sit at x > rank_x_max; the minimum y of those is the list top.
@@ -95,6 +116,9 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
                and not NUM_RE.match(t.replace(",", ""))
                and t.lower() not in skip]
     col_y_min = max(0, min(name_ys) - 80) if name_ys else 0
+    # Caller can force the list to start below a fixed header (e.g. Dream Realm's
+    # winner podium + date bar), so the top-3 podium can't steal ranks 1-3.
+    col_y_min = max(col_y_min, list_y_min)
     # Deduplicate by rank value: keep only the topmost (lowest y) occurrence of
     # each rank number. "31" misread as "3" would otherwise assign rank 3 to a
     # member whose actual rank is 31.
@@ -141,10 +165,14 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
     for cx, cy, t in sorted(blocks, key=lambda b: b[0]):  # left to right
         if cx <= rank_x_max or cx > 700:
             continue
+        if cy < list_y_min:  # above the list (podium / header) — never a member row
+            continue
         candidate = re.sub(r"^[\W_]+", "", t)
         candidate = re.sub(r"\s*[sS]?\d{3,4}$", "", candidate).strip()
         candidate = re.sub(r"\s*[sS]$", "", candidate).strip()
-        if not candidate or candidate.lower() in skip:
+        # Single-character reads ('市', '金') are OCR noise from UI bleed, never
+        # real player names · drop them so they don't reach REVIEW_NAMES.
+        if not candidate or len(candidate) <= 1 or candidate.lower() in skip:
             continue
         if NUM_RE.match(candidate.replace(",", "")):
             continue
@@ -163,11 +191,15 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
             if abs(sy - cy) < card_tol:
                 rank_val = rv
                 break
-        # Points are required as a "real card" signal — UNLESS this is a
-        # points-free mode (Supreme Arena) where the column rank confirms the card.
-        if not nearby_pts and rank_val is None:
-            continue
-        if not nearby_pts and point_blocks:
+        # A row is a real card if it has numeric points, a rank badge from the
+        # column scan, OR (when value_re is given) a right-side value matching it.
+        # AFK Stages always shows a Phase Progress value ('Apex N' text or a
+        # number), so value_re makes that the card signal even if the rank read
+        # misses · the rank fallback also covers points-free modes (Supreme Arena).
+        value_hit = bool(value_re) and any(
+            ecx > 700 and abs(ecy - cy) < card_tol and value_re.search(t)
+            for ecx, ecy, t in blocks)
+        if not nearby_pts and rank_val is None and not value_hit:
             continue
         val = max(nearby_pts, key=lambda p: p[0])[2] if nearby_pts else None
         # Collect x>700 non-numeric text blocks (e.g. "6934M" score in Dream Realm)
@@ -270,44 +302,93 @@ def _warband_skip_set() -> set[str]:
         return set()
 
 
+def _vote_name(names: list[str]) -> str:
+    """Cluster name variants by fuzzy similarity; return the most common spelling
+    in the largest cluster."""
+    from collections import Counter
+    clusters: list[list[str]] = []
+    for name in names:
+        for cluster in clusters:
+            if any(SequenceMatcher(None, name.lower(), c.lower()).ratio() >= 0.75
+                   for c in cluster):
+                cluster.append(name)
+                break
+        else:
+            clusters.append([name])
+    if not clusters:
+        return ''
+    largest = max(clusters, key=len)
+    return Counter(largest).most_common(1)[0][0]
+
+
+def _vote_entries(observations: list[dict], label: str,
+                  min_obs: int = 1) -> list[dict]:
+    """Consolidate raw frame observations into one entry per player via majority
+    vote. Groups by name cluster first — rank OCR can bleed values from adjacent
+    numeric fields (e.g. difficulty in Arcane Lab), so grouping by rank first
+    would create duplicate entries for the same player. Name is more stable.
+    Drops players seen fewer than min_obs times."""
+    from collections import Counter
+
+    name_groups: list[list[dict]] = []
+    for obs in observations:
+        for group in name_groups:
+            if any(SequenceMatcher(None, obs['name'].lower(), o['name'].lower()).ratio() >= 0.75
+                   for o in group):
+                group.append(obs)
+                break
+        else:
+            name_groups.append([obs])
+
+    result: list[dict] = []
+    for group in name_groups:
+        if len(group) < min_obs:
+            logging.debug("%s: '%s' seen %d time(s), dropping.",
+                          label, group[0]['name'], len(group))
+            continue
+        name = _vote_name([o['name'] for o in group])
+        if not name:
+            continue
+        entry: dict = {'name': name}
+        for field in group[0]:
+            if field == 'name':
+                continue
+            values = [o[field] for o in group if o.get(field) is not None]
+            entry[field] = Counter(values).most_common(1)[0][0] if values else None
+        result.append(entry)
+
+    result.sort(key=lambda r: (r.get('rank') is None, r.get('rank') or 0))
+    logging.info("%s: voted %d obs → %d entries.", label, len(observations), len(result))
+    return result
+
+
 def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                 reentry_fn=None) -> list[dict]:
-    """Open-ended scroll pass for ranked lists. parse_fn(img, ocr_results) ->
-    list[dict] each with at least 'name'. Dedup across frames by fuzzy name.
+    """Open-ended scroll pass for ranked lists. All raw observations from every
+    frame are accumulated then consolidated via majority vote per rank.
 
-    reentry_fn: optional callable that re-opens and re-filters the ranking list
-    (back one screen → Rankings → filter). Called once after the first pass if
-    any entries were found, to catch top-card OCR misses (e.g. gold-styled rank 1)."""
-    seen_lower: set[str] = set()
-    entries: list[dict] = []
+    parse_fn(img, ocr_results) -> list[dict] each with at least 'name'.
+    reentry_fn: optional callable that re-opens the ranking list; if provided,
+    a second observation pass runs after the first to improve vote quality."""
+    all_observations: list[dict] = []
 
-    def _one_pass():
+    def _one_pass() -> None:
+        seen_keys: set = set()
+        no_new = 0
         no_change = 0
-        no_new = 0      # consecutive frames with 0 new entries
         scrolls = 0
         prev_img = screenshot()
-        new_this_pass = 0
         while scrolls < max_scrolls:
             img = screenshot()
+            frame_entries = parse_fn(img, ocr_image(img))
+            all_observations.extend(frame_entries)
             new = 0
-            for e in parse_fn(img, ocr_image(img)):
-                key = fuzzy_key(e["name"], seen_lower)
-                if key is None:
-                    seen_lower.add(e["name"].lower())
-                    entries.append(e)
+            for e in frame_entries:
+                k = e.get('rank') if e.get('rank') is not None else e.get('name', '').lower()
+                if k and k not in seen_keys:
+                    seen_keys.add(k)
                     new += 1
-                else:
-                    for existing in entries:
-                        if existing["name"].lower() == key:
-                            for k, v in e.items():
-                                if v is not None and existing.get(k) is None:
-                                    existing[k] = v
-                            break
-                    new_this_pass += 1
-            logging.info("%s: scan frame · %d new, %d total.", label, new, len(entries))
-            # Stop if 5 consecutive frames produce nothing new — handles screens
-            # with animated elements (timers) that prevent screen_changed from
-            # detecting the end of the list.
+            logging.info("%s: frame · %d new keys, %d obs total.", label, new, len(all_observations))
             if new == 0:
                 no_new += 1
                 if no_new >= 5:
@@ -327,19 +408,16 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
             prev_img = curr_img
         if scrolls >= max_scrolls:
             logging.warning("%s: hit scroll limit (%d).", label, max_scrolls)
-        return new_this_pass
 
     _one_pass()
 
-    if reentry_fn and entries:
+    if reentry_fn and all_observations:
         ok = reentry_fn()
         if ok is not False:
-            logging.info("%s: starting second pass to fill OCR gaps.", label)
-            new_pass2 = _one_pass()
-            if new_pass2:
-                logging.info("%s: pass 2 found %d additional entries.", label, new_pass2)
+            logging.info("%s: second pass for more observations.", label)
+            _one_pass()
 
-    return entries
+    return _vote_entries(all_observations, label)
 
 
 def make_reentry_fn(mode_label: str):
@@ -375,4 +453,14 @@ def resolve_entries(entries: list[dict], label: str) -> list[dict]:
             rows.append({**e, "member_id": resolved[e["name"]]})
         else:
             print(f"  {label}: skipped unmatched '{e['name']}'")
+    canonical = names_for_ids([r["member_id"] for r in rows])
+    matched = sorted(rows, key=lambda r: (r.get("rank") is None, r.get("rank") or 0))
+
+    def _fmt(r: dict) -> str:
+        name = canonical.get(r["member_id"], r["name"])
+        tag = f" (read: {r['name']})" if r["name"] != name else ""
+        return f"#{r.get('rank') or '?'} {name}{tag}"
+
+    logging.info("%s: matched %d/%d entries: %s", label, len(rows), len(entries),
+                 ", ".join(_fmt(r) for r in matched))
     return rows

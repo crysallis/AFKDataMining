@@ -12,6 +12,10 @@ from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_ree
 
 PHASE_RE = re.compile(r"Phase\s*([123])", re.IGNORECASE)
 APEX_RE = re.compile(r"Apex\s*\d+", re.IGNORECASE)
+# Every AFK Stages card shows a Phase Progress value · 'Apex N' or a bare stage
+# number · used as the real-card signal so a row survives even if its rank
+# badge OCR misses ('Phase Progress' header never matches this).
+PROGRESS_RE = re.compile(r"Apex\s*\d+|^\d[\d,]*$", re.IGNORECASE)
 
 
 def _detect_phase(ocr_results) -> int | None:
@@ -24,7 +28,7 @@ def _detect_phase(ocr_results) -> int | None:
 
 def _parse(img, ocr_results) -> list[dict]:
     out = []
-    for row in parse_rank_rows(img, ocr_results):
+    for row in parse_rank_rows(img, ocr_results, value_re=PROGRESS_RE):
         progress = None
         for t in row.texts:
             m = APEX_RE.search(t)

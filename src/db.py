@@ -422,6 +422,37 @@ def _roster_exact(name: str, roster: set[str]) -> str | None:
     return None
 
 
+def _normalize_core(name: str) -> str:
+    """Strip decorative characters guild members historically bolted onto their
+    in-game names (brackets, symbols, and non-Latin glyphs like the Greek ψ used
+    as a tag) so 'ψ」Hira' and 'Hira' compare equal. Keeps ASCII letters/digits
+    only, lowercased. Returns '' for names with no ASCII alnum (e.g. pure-CJK
+    like '谢霆锋') · callers MUST skip the normalized tier when the core is empty,
+    or unrelated empty-core names would falsely fuse."""
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _normalized_roster(roster: set[str]) -> dict[str, str]:
+    """Map each roster name's normalized core to its canonical spelling. Empty
+    cores (pure non-ASCII names) are excluded so they can't collide."""
+    idx: dict[str, str] = {}
+    for r in roster:
+        core = _normalize_core(r)
+        if core and core not in idx:
+            idx[core] = r
+    return idx
+
+
+def _normalized_match(name: str, norm_idx: dict[str, str]) -> str | None:
+    """Match by decoration-stripped core. Skips when the candidate's core is
+    empty so pure-CJK / symbol-only reads never match via this tier. Only runs
+    after exact match has already failed, so any hit is a genuine correction."""
+    core = _normalize_core(name)
+    if not core:
+        return None
+    return norm_idx.get(core)
+
+
 def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> str | None:
     best_score = 0.0
     best_match = None
@@ -445,6 +476,7 @@ def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
     """
     corrections = get_corrections()
     roster = _get_active_roster()
+    norm_idx = _normalized_roster(roster)
     uncertain: list[str] = []
 
     for m in members:
@@ -461,7 +493,15 @@ def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
             m.name = exact
             continue
 
-        # 3. Fuzzy match against the active roster
+        # 3. Normalized-core match (strips decorative tags · 'ψ」Hira' -> 'Hira')
+        norm = _normalized_match(original, norm_idx)
+        if norm:
+            print(f"  Auto-corrected '{original}' -> '{norm}' (matched core)")
+            save_correction(original, norm)
+            m.name = norm
+            continue
+
+        # 4. Fuzzy match against the active roster
         match = _fuzzy_match_known(original, roster, threshold=0.86)
         if match:
             print(f"  Auto-corrected '{original}' -> '{match}' (matched roster)")
@@ -469,7 +509,7 @@ def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
             m.name = match
             continue
 
-        # 4. Unknown read — accept as-is, flag pending + for review
+        # 5. Unknown read — accept as-is, flag pending + for review
         uncertain.append(original)
 
     return members, uncertain
@@ -527,6 +567,18 @@ def get_power_history(name: str) -> list[sqlite3.Row]:
 BOSS_ALIASES: dict[str, str] = {}
 
 
+def names_for_ids(ids: list[int]) -> dict[int, str]:
+    """Map member ids to their canonical ingame_name · for logging which member
+    an OCR read resolved to."""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with _connect() as conn:
+        return {r["id"]: r["ingame_name"] for r in conn.execute(
+            f"SELECT id, ingame_name FROM members WHERE id IN ({placeholders})", ids
+        ).fetchall()}
+
+
 def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
     """Resolve OCR'd names from ranking scans into member ids · alias → exact →
     fuzzy@0.86 against the same roster validate_names() uses. Returns
@@ -535,6 +587,7 @@ def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
     surface them via REVIEW_NAMES."""
     corrections = get_corrections()
     roster = _get_active_roster()
+    norm_idx = _normalized_roster(roster)
     with _connect() as conn:
         id_by_name = {r["ingame_name"].lower(): r["id"]
                       for r in conn.execute("SELECT id, ingame_name FROM members").fetchall()}
@@ -543,6 +596,10 @@ def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
     for raw in names:
         name = corrections.get(raw.lower(), raw)
         canonical = _roster_exact(name, roster)
+        if canonical is None:
+            canonical = _normalized_match(name, norm_idx)
+            if canonical:
+                save_correction(raw, canonical)
         if canonical is None:
             canonical = _fuzzy_match_known(name, roster, threshold=0.86)
             if canonical:

@@ -124,8 +124,19 @@ def _read_boss_name(ocr_results) -> str:
 
 def _parse(img, ocr_results) -> list[dict]:
     tiers = detect_tiers(img, "dream_realm")
+    # The winner podium (top-3 heroes) sits above the date bar and steals ranks
+    # 1-3 from the list · start the list parse just below the lowest date tab so
+    # rank #1 (directly under the podium) is read cleanly while it's on screen.
+    date_ys = [block_center(b)[1] for b, t, _ in ocr_results
+               if DATE_RE.match(_norm_date_text(t.strip()))
+               and block_center(b)[1] < _DATE_BAR_Y_MAX]
+    list_y_min = max(date_ys) + 60 if date_ys else 0
     rows = []
-    for row in parse_rank_rows(img, ocr_results):
+    for row in parse_rank_rows(img, ocr_results, list_y_min=list_y_min):
+        # The date bar (e.g. '6/14') sits above the list and can be misparsed as
+        # a player name · drop M/D-shaped reads so they don't create false reviews.
+        if DATE_RE.match(_norm_date_text(row.name)):
+            continue
         score = _find_score(row.texts)
         rows.append({"name": row.name, "rank": row.rank, "score": score,
                      "tier": tier_for_row(row.y, tiers) or "common"})
