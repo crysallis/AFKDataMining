@@ -8,15 +8,13 @@ See global context at `C:\Users\crysa\.claude\CLAUDE.md`.
 
 ## Session Start
 
-On the first message of every conversation, before responding, read these memory files:
+Project knowledge lives in the mempalace `afkdatamining` wing (rooms: status, src,
+decisions, gotchas, pending). `mempalace wake-up` (global CLAUDE.md step 1) loads recent
+context; `mempalace_search` pulls specifics on demand — e.g. search the `gotchas` room
+before touching scraper stdout/logging, the `src` room for mode-scan parser internals.
+Companion bot knowledge is in the `discordbotafkj` wing.
 
-- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_afk_datamining.md`
-- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_consensus_scan.md`
-- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_mode_scans.md`
-- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_scraper_stdout_contract.md`
-- `C:\Users\crysa\.claude\projects\c--vscode-AFKDataMining\memory\project_afk_stages_phase_nav.md`
-
-Then give a brief what's-done / what's-pending summary before starting the task.
+Give a brief what's-done / what's-pending summary before starting the task.
 
 ## CRITICAL: Template Capture
 **Always use `src/capture_template.py` to capture templates via ADB screencap.**
