@@ -53,6 +53,21 @@ The scan runs non-interactively — it never prompts for input — and is resili
 
 Alternatively, trigger a scan from Discord using `/scan` (authorized user only).
 
+### Game-mode ranking scans
+
+Beyond the roster scrape, the scraper can capture per-member rankings for six game
+modes. Each is enabled with a flag (with no flags, only the roster scan runs):
+
+```powershell
+.\venv\Scripts\python.exe src\scraper.py --arena --honor-duel
+# flags: --dream-realm --afk-stages --arena --supreme-arena --honor-duel --arcane-lab
+```
+
+These scans read every ranking card across many frames and resolve the final
+value by majority vote, so they survive OCR noise and animated rows. Results go
+to per-mode tables in `guild.db` and feed the bot's `/member` command. See
+`ARCHITECTURE.md` for the voting and rank-reading details.
+
 ---
 
 ## Output
@@ -82,12 +97,14 @@ Screen navigation relies on PNG reference images stored in `src/templates/`. If 
 ```
 AFKDataMining/
     src/
-        scraper.py          Entry point. Orchestrates the full scrape.
+        scraper.py          Entry point. Orchestrates roster + mode scans.
         nav.py              Screen navigation via ADB + template matching.
         device.py           ADB interface (screenshot, tap, swipe, scroll).
-        ocr.py              OCR wrapper around RapidOCR.
+        ocr.py              Shared OCR (RapidOCR PP-OCRv5, with v3 fallback).
         parser.py           Extracts structured Member data from OCR results.
+        modes/              Six game-mode ranking scans + shared vote plumbing.
         db.py               SQLite schema, weekly upsert, name correction logic.
+        import_history.py   One-time historical snapshot import.
         capture_template.py Utility to capture template PNGs from live screen.
         templates/          Reference PNG files for template matching.
     guild.db                SQLite database (shared with MeerBot).

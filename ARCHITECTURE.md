@@ -28,6 +28,11 @@ parser.py           Structured Member extraction from OCR text
 db.py               Weekly upsert into SQLite
 ```
 
+The same `device.py`/`nav.py`/`ocr.py` foundation also powers a parallel
+subsystem: the six **game-mode ranking scans** under `modes/`, which use
+read-many-and-vote consolidation instead of the roster scrape's first-read dedup.
+See [Game-mode ranking scans](#game-mode-ranking-scans-modes) below.
+
 ---
 
 ## Layer 1 · device.py (ADB Interface)
@@ -337,6 +342,75 @@ This absolute value is what the inactivity alert queries against, since relative
         -> weekly upsert (pending reads inserted with pending=1) -> guild.db updated
     -> bot: post-scan inactivity alert if anyone 3+ days inactive
 ```
+
+---
+
+## Game-mode ranking scans (`modes/`)
+
+Separate from the guild roster scrape above, the scraper also captures per-member
+**rankings** for six game modes: `dream_realm`, `afk_stages`, `arena`,
+`supreme_arena`, `honor_duel`, `arcane_lab`. Each lives in `src/modes/<mode>.py`
+with a `scan()` entry point and is run via `scraper.py` CLI flags
+(`--arena`, `--honor-duel`, ...) or the bot's `/scan` (each gated by a
+`SCAN_*` bot-config key, toggled in the admin Scan Modes tab). With no flags the
+scraper runs only the roster scan; passing mode flags runs just those modes (add
+`--guild` to also run the roster scan in the same invocation).
+
+Shared scaffolding is in `modes/common.py`:
+
+- **`parse_rank_rows()`** · rank-number-anchored card parser. The large rank
+  number on the left of each card is the anchor; the name, points/score, and
+  any extra text blocks are gathered by vertical proximity. Ranks come from
+  `_scan_rank_column()`, a single OCR pass over the left rank strip using
+  PP-OCRv5 (it reads the calligraphic single-digit glyphs that grayscale/v3
+  miss).
+- **`scroll_scan()`** · the open-ended scroll loop. Unlike the roster scrape's
+  first-read-wins dedup, mode scans **collect every observation** from every
+  frame and consolidate them by majority vote afterward (`_vote_entries()`):
+  observations are clustered by fuzzy name similarity, then each field (rank,
+  points, ...) is decided by `Counter.most_common`. `None` reads are dropped
+  from the vote, so a single clean frame is enough.
+- **`resolve_entries()`** · maps each voted OCR name to a `member_id` via the
+  same roster matcher (`alias -> exact -> normalized-core -> fuzzy@0.86`).
+  Unmatched names are **dropped**, not created · membership belongs to the
+  roster scan. Unmatched reads surface as `REVIEW_NAMES:` for the bot.
+
+### Why voting (not re-passes)
+
+The reliability win over naive scanning is **read-many-and-vote**, not a better
+OCR engine. `scroll_scan` samples `frames_per_stop=2` temporally-spread frames at
+each scroll stop (0.4s apart) and votes across all of them. This replaced an
+earlier second full re-navigated pass: same vote redundancy, no rescroll, and
+samples spread in time so they survive animated rows. The reentry second pass now
+runs only in single-frame mode (`frames_per_stop=1`).
+
+This matters because the winner **podium** (top-3 drawn as animated heroes)
+flickers the ornate gold top-1 rank glyph in and out of OCR · measured ~13% of
+live frames miss it. One missed frame no longer loses the rank, and the podium's
+decorative badges are excluded from the list parse by a y-filter: the rank strip
+is scanned from the top for stable detection, then hits above the list's start
+(`col_y_min`) are discarded in Python rather than cropping the image (cropping
+shifts the 3x resize grid and can make the borderline glyph vanish at certain
+offsets).
+
+### Per-mode notes
+
+- **dream_realm** · multi-day, multi-boss; has its own date-tab navigation
+  instead of the standard reentry. One `dream_realm_scores` row per member per
+  boss per scan day.
+- **afk_stages** · progress is text (`Apex N`), not numeric points, so the parser
+  is given a `value_re` to recognize the card; season comes from the DB, phase
+  from the on-screen badge.
+- **arcane_lab** · three numeric columns (difficulty / floor / points) assigned
+  by nearest header x-position.
+- **honor_duel** · the viewer's own "My Rank: Unranked" slot is skipped so it
+  can't steal the adjacent card's rank.
+- **supreme_arena** · off Mon/Tue UTC; dismisses the Daily Calculation popup.
+
+Results are written to per-mode tables (`*_rankings`, `dream_realm_scores`) keyed
+by `member_id` + `scanned_at`; the bot reads the latest scan per member for
+`/member`. Each mode prints a `<MODE>:`-prefixed status line to stdout that the
+bot parses and posts to Discord.
 
 ---
 

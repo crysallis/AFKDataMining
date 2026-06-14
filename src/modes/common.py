@@ -119,12 +119,19 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
     # Caller can force the list to start below a fixed header (e.g. Dream Realm's
     # winner podium + date bar), so the top-3 podium can't steal ranks 1-3.
     col_y_min = max(col_y_min, list_y_min)
+    # Scan the FULL rank strip (from the top) for stable glyph detection, then
+    # exclude the podium by filtering on y in Python. Cropping the image at
+    # col_y_min shifts the 3x resize grid and can make a borderline ornate glyph
+    # vanish at certain offsets — the gold top-1 badge read fine at y_min 0/600/700
+    # but disappeared at exactly 614, silently dropping the #1 player's rank.
     # Deduplicate by rank value: keep only the topmost (lowest y) occurrence of
     # each rank number. "31" misread as "3" would otherwise assign rank 3 to a
     # member whose actual rank is 31.
     _seen_ranks: set[int] = set()
     column_ranks: dict[int, int] = {}
-    for sy, rv in _scan_rank_column(img, y_min=col_y_min):
+    for sy, rv in _scan_rank_column(img, y_min=0):
+        if sy < col_y_min:
+            continue
         if rv not in _seen_ranks:
             _seen_ranks.add(rv)
             column_ranks[sy] = rv
@@ -363,13 +370,17 @@ def _vote_entries(observations: list[dict], label: str,
 
 
 def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
-                reentry_fn=None) -> list[dict]:
+                reentry_fn=None, frames_per_stop: int = 2) -> list[dict]:
     """Open-ended scroll pass for ranked lists. All raw observations from every
     frame are accumulated then consolidated via majority vote per rank.
 
     parse_fn(img, ocr_results) -> list[dict] each with at least 'name'.
-    reentry_fn: optional callable that re-opens the ranking list; if provided,
-    a second observation pass runs after the first to improve vote quality."""
+    frames_per_stop: OCR this many temporally-spread frames at each scroll stop
+    before scrolling. >=2 gives the vote redundancy that survives animated rows
+    (e.g. the podium flickering the ornate top-1 glyph out of OCR) without a
+    second full pass — so the reentry pass is skipped when multi-sampling.
+    reentry_fn: re-opens the ranking list for a second full pass; only used when
+    frames_per_stop < 2 (single-frame mode), where per-stop redundancy is absent."""
     all_observations: list[dict] = []
 
     def _one_pass() -> None:
@@ -377,18 +388,22 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
         no_new = 0
         no_change = 0
         scrolls = 0
-        prev_img = screenshot()
         while scrolls < max_scrolls:
-            img = screenshot()
-            frame_entries = parse_fn(img, ocr_image(img))
-            all_observations.extend(frame_entries)
             new = 0
-            for e in frame_entries:
-                k = e.get('rank') if e.get('rank') is not None else e.get('name', '').lower()
-                if k and k not in seen_keys:
-                    seen_keys.add(k)
-                    new += 1
-            logging.info("%s: frame · %d new keys, %d obs total.", label, new, len(all_observations))
+            last_img = None
+            for f in range(max(1, frames_per_stop)):
+                if f:
+                    time.sleep(0.4)
+                last_img = screenshot()
+                frame_entries = parse_fn(last_img, ocr_image(last_img))
+                all_observations.extend(frame_entries)
+                for e in frame_entries:
+                    k = e.get('rank') if e.get('rank') is not None else e.get('name', '').lower()
+                    if k and k not in seen_keys:
+                        seen_keys.add(k)
+                        new += 1
+            logging.info("%s: stop · %d frame(s), %d new keys, %d obs total.",
+                         label, max(1, frames_per_stop), new, len(all_observations))
             if new == 0:
                 no_new += 1
                 if no_new >= 5:
@@ -399,19 +414,18 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
             scrolls += 1
             time.sleep(1.2)
             curr_img = screenshot()
-            if not screen_changed(prev_img, curr_img):
+            if not screen_changed(last_img, curr_img):
                 no_change += 1
                 if no_change >= 2:
                     break
             else:
                 no_change = 0
-            prev_img = curr_img
         if scrolls >= max_scrolls:
             logging.warning("%s: hit scroll limit (%d).", label, max_scrolls)
 
     _one_pass()
 
-    if reentry_fn and all_observations:
+    if reentry_fn and frames_per_stop < 2 and all_observations:
         ok = reentry_fn()
         if ok is not False:
             logging.info("%s: second pass for more observations.", label)
