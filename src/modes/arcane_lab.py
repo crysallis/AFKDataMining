@@ -39,7 +39,8 @@ def _column_values(ocr_results, row_y: int) -> dict[str, int]:
 
 def _parse(img, ocr_results) -> list[dict]:
     out = []
-    for row in parse_rank_rows(img, ocr_results):
+    for row in parse_rank_rows(img, ocr_results,
+                               extra_skip={"difficulty", "floor"}):
         cols = _column_values(ocr_results, row.y)
         out.append({"name": row.name, "rank": row.rank,
                     "difficulty": cols.get("difficulty"),
