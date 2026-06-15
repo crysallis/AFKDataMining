@@ -12,7 +12,7 @@ import numpy as np
 from device import screenshot, scroll_down, screen_changed
 from nav import TEMPLATES_DIR, find_template_all
 from ocr import ocr_image, block_center, engine, get_engine_v5
-from db import resolve_names, names_for_ids
+from db import resolve_names, names_for_ids, RosterResolver, identity_key
 
 # Ranked lists have no known total (1 to all 90 members may place), so the
 # scroll loop ends only on two consecutive unchanged frames.
@@ -135,6 +135,22 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
         if rv not in _seen_ranks:
             _seen_ranks.add(rv)
             column_ranks[sy] = rv
+
+    # Template-match the ornate top-3 badges for any rank OCR missed.
+    # Only fires when a rank is absent from _seen_ranks; ranks 2/3 are
+    # reliably found by OCR so in practice this only activates for rank #1
+    # whose gold crown glyph is consistently unreadable (tested: 1/20 via OCR).
+    for _rv in (1, 2, 3):
+        if _rv in _seen_ranks:
+            continue
+        _tmpl = TEMPLATES_DIR / f"rank_{_rv}_badge.png"
+        if not _tmpl.exists():
+            continue
+        for _, _by in find_template_all(img, _tmpl, threshold=0.75):
+            if _by >= col_y_min:
+                _seen_ranks.add(_rv)
+                column_ranks[_by] = _rv
+                break
 
     rows: list[RankRow] = []
     for rank_val, rank_cx, rank_cy in anchors:
@@ -330,30 +346,31 @@ def _vote_name(names: list[str]) -> str:
 
 def _vote_entries(observations: list[dict], label: str,
                   min_obs: int = 1) -> list[dict]:
-    """Consolidate raw frame observations into one entry per player via majority
-    vote. Groups by name cluster first — rank OCR can bleed values from adjacent
-    numeric fields (e.g. difficulty in Arcane Lab), so grouping by rank first
-    would create duplicate entries for the same player. Name is more stable.
-    Drops players seen fewer than min_obs times."""
+    """Consolidate raw frame observations into one entry per player, resolve-then-vote:
+    each observation's name is resolved to a canonical identity FIRST, then grouped by
+    that identity, so a name garbled or truncated in one frame is outvoted by the
+    frames that read it cleanly. Numeric fields (rank, points, ...) are voted per
+    identity — grouping by identity (not rank) avoids duplicate entries when rank OCR
+    bleeds values from adjacent fields. Unresolved reads group by their normalized core
+    and keep a voted raw name (resolve_entries drops them). Drops players seen fewer
+    than min_obs times."""
     from collections import Counter
+    resolver = RosterResolver(learn=False)
 
-    name_groups: list[list[dict]] = []
+    groups: dict[str, list[dict]] = {}
+    resolved_key: dict[str, bool] = {}
     for obs in observations:
-        for group in name_groups:
-            if any(SequenceMatcher(None, obs['name'].lower(), o['name'].lower()).ratio() >= 0.75
-                   for o in group):
-                group.append(obs)
-                break
-        else:
-            name_groups.append([obs])
+        key, resolved = identity_key(resolver, obs['name'])
+        groups.setdefault(key, []).append(obs)
+        resolved_key[key] = resolved
 
     result: list[dict] = []
-    for group in name_groups:
+    for key, group in groups.items():
         if len(group) < min_obs:
             logging.debug("%s: '%s' seen %d time(s), dropping.",
-                          label, group[0]['name'], len(group))
+                          label, key, len(group))
             continue
-        name = _vote_name([o['name'] for o in group])
+        name = key if resolved_key[key] else _vote_name([o['name'] for o in group])
         if not name:
             continue
         entry: dict = {'name': name}
