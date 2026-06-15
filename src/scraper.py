@@ -5,14 +5,13 @@ import os
 import re
 import sys
 import threading
-import time
-from difflib import SequenceMatcher
 from pathlib import Path
-from device import (screenshot, scroll_down, scroll_to_top, screen_changed,
+from device import (screenshot, scroll_to_top,
                     ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
 from nav import navigate_to_guild_members
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
+from capture_ids import capture_ingame_ids
 
 STALL_SECONDS = 120  # abort if no successful ADB call for this long (true hang, not slow)
 
@@ -49,8 +48,10 @@ logging.basicConfig(
 # spaces the slash, so accept "Guild Member 88 / 90", "GuildMember(88/90)", etc.
 TOTAL_RE = re.compile(r"Guild\s*Member\D*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 
-# Import AFTER the logging/Tee setup above so RapidOCR's init logs are captured.
+# Import AFTER the logging/Tee setup above so RapidOCR's init logs are captured
+# (both pull in the ocr module, which constructs RapidOCR at import time).
 from ocr import ocr_image as _ocr  # noqa: E402
+from modes.common import scroll_scan  # noqa: E402
 
 
 def _get_total_members(ocr_results) -> int:
@@ -61,85 +62,32 @@ def _get_total_members(ocr_results) -> int:
     return 90  # fallback if the header isn't read this frame
 
 
-def _vote_members(observations: list) -> list:
-    """Consolidate raw Member observations by fuzzy name cluster. For each
-    cluster, votes on the best power, activeness, warband, and last_active
-    by preferring non-null/non-zero values via most-common count."""
-    from collections import Counter
-    clusters: list[list] = []
-    for m in observations:
-        for group in clusters:
-            if any(SequenceMatcher(None, m.name.lower(), g.name.lower()).ratio() >= 0.88
-                   for g in group):
-                group.append(m)
-                break
-        else:
-            clusters.append([m])
-
-    result = []
-    for group in clusters:
-        name = Counter(m.name for m in group).most_common(1)[0][0]
-
-        powers = [m.combat_power for m in group if m.combat_power]
-        power = Counter(powers).most_common(1)[0][0] if powers else ''
-
-        activenesses = [m.activeness for m in group if m.activeness > 0]
-        activeness = Counter(activenesses).most_common(1)[0][0] if activenesses else 0
-
-        warbands = [m.warband for m in group if m.warband]
-        warband = Counter(warbands).most_common(1)[0][0] if warbands else ''
-
-        last_actives = [m.last_active for m in group if m.last_active not in ('Unknown', '')]
-        last_active = Counter(last_actives).most_common(1)[0][0] if last_actives else 'Unknown'
-
-        result.append(Member(name=name, last_active=last_active,
-                             combat_power=power, activeness=activeness, warband=warband))
-    return result
+def _guild_parse(img, ocr_results) -> list[dict]:
+    """parse_fn for the shared scroll_scan · the guild scan's 'what': parse member
+    cards into dicts. Empty/zero/Unknown fields become None so _vote_entries skips
+    them when voting (an unread power/warband never outvotes a real one). img is
+    unused (parse_members works from the OCR results), kept for the parse_fn contract."""
+    out = []
+    for m in parse_members(ocr_results):
+        out.append({
+            "name": m.name,
+            "last_active": m.last_active if m.last_active not in ("Unknown", "") else None,
+            "combat_power": m.combat_power or None,
+            "activeness": m.activeness or None,
+            "warband": m.warband or None,
+        })
+    return out
 
 
-def _collect_pass(scroll_fn, observations: list, total_ref: list,
-                  label: str, max_scrolls: int = 150) -> None:
-    """Single scroll pass that appends every parsed Member to observations.
-    total_ref is a one-element list so the detected total can be written back."""
-    scroll_to_top()
-    seen_names: set[str] = set()
-    no_change_count = 0
-    scroll_count = 0
-    prev_img = screenshot()
-
-    while scroll_count < max_scrolls:
-        img = screenshot()
-        results = _ocr(img)
-
-        if not observations:
-            detected = _get_total_members(results)
-            if detected:
-                total_ref[0] = detected
-                print(f"Total members: {total_ref[0]}")
-
-        members = parse_members(results)
-        observations.extend(members)
-
-        new = sum(1 for m in members
-                  if m.name.lower() not in seen_names and not seen_names.add(m.name.lower()))  # type: ignore[func-returns-value]
-        print(f"  {label} frame: {new} new names, {len(seen_names)}/{total_ref[0]} seen")
-
-        scroll_fn()
-        scroll_count += 1
-        time.sleep(1.2)
-
-        curr_img = screenshot()
-        if not screen_changed(prev_img, curr_img):
-            no_change_count += 1
-            if no_change_count >= 2:
-                print(f"{label} complete.")
-                return
-        else:
-            no_change_count = 0
-        prev_img = curr_img
-
-    if scroll_count >= max_scrolls:
-        print(f"{label} hit scroll limit ({max_scrolls}), stopping.")
+def _entry_to_member(e: dict) -> Member:
+    """Voted entry dict -> Member, restoring the empty/zero/Unknown defaults."""
+    return Member(
+        name=e["name"],
+        last_active=e.get("last_active") or "Unknown",
+        combat_power=e.get("combat_power") or "",
+        activeness=e.get("activeness") or 0,
+        warband=e.get("warband") or "",
+    )
 
 
 def _start_stall_watchdog(done: threading.Event) -> None:
@@ -168,15 +116,15 @@ def scrape_guild() -> tuple[list[Member], int]:
         ensure_resolution()
         navigate_to_guild_members()
         print("Starting scrape...")
-        total_ref = [_get_total_members(_ocr(screenshot()))]
-        print(f"Target: {total_ref[0]} members")
+        scroll_to_top()
+        target = _get_total_members(_ocr(screenshot()))
+        print(f"Target: {target} members")
 
-        observations: list[Member] = []
-        _collect_pass(scroll_down, observations, total_ref, "Pass 1")
-
-        logging.info("Voting on %d raw observations...", len(observations))
-        all_members = _vote_members(observations)
-        print(f"Voted: {len(all_members)} members from {len(observations)} observations.")
+        # Same shared driver the mode scans use (the 'how'): multi-sample frames per
+        # scroll stop, then resolve-then-vote per identity. _guild_parse is the 'what'.
+        entries = scroll_scan(_guild_parse, "Guild", reentry_fn=None)
+        all_members = [_entry_to_member(e) for e in entries]
+        print(f"Voted: {len(all_members)} members.")
         for m in all_members:
             print(f"  {m.name} | {m.last_active} | {m.combat_power} | {m.warband} | {m.activeness}")
 
@@ -185,6 +133,7 @@ def scrape_guild() -> tuple[list[Member], int]:
         print(f"Saved to DB as snapshot #{snapshot_id}.")
         if uncertain:
             print(f"REVIEW_NAMES: {', '.join(uncertain)}")
+        capture_ingame_ids()
         return all_members, actual_count
     finally:
         _done.set()

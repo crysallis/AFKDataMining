@@ -19,6 +19,10 @@ def _connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # Shared DB (bot reads/writes concurrently); wait on a busy lock instead of
+    # failing the write instantly. Matters most during the ID-capture pass, which
+    # writes between slow device taps.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -53,7 +57,8 @@ def init_db() -> None:
                 active          INTEGER NOT NULL DEFAULT 0,
                 pending         INTEGER NOT NULL DEFAULT 0,
                 warband_id      INTEGER REFERENCES warbands(id),
-                last_scanned_at TEXT
+                last_scanned_at TEXT,
+                ingame_id       INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS member_name_history (
@@ -69,8 +74,8 @@ def init_db() -> None:
                 snapshot_id         INTEGER NOT NULL REFERENCES snapshots(id),
                 member_id           INTEGER REFERENCES members(id),
                 name                TEXT NOT NULL,
-                last_active         TEXT NOT NULL,
-                last_seen_approx    TEXT,
+                last_active         TEXT,  -- NULL when the OCR'd time garbled · the member
+                last_seen_approx    TEXT,  -- is still captured (name-anchored); time is nice-to-have
                 combat_power        TEXT NOT NULL,
                 combat_power_value  REAL,
                 activeness          INTEGER NOT NULL,
@@ -170,6 +175,15 @@ def _parse_last_seen(last_active: str, scraped_at: datetime) -> datetime:
     delta = {"s": timedelta(seconds=value), "m": timedelta(minutes=value),
              "h": timedelta(hours=value),   "d": timedelta(days=value)}[unit]
     return scraped_at - delta
+
+
+def _la_pair(last_active: str | None, scraped_at: datetime) -> tuple[str | None, str | None]:
+    """(last_active, last_seen_approx) to store · a garbled/unread time nulls BOTH.
+    Capturing the member is what matters; the last-active timestamp is nice-to-have,
+    so we store NULL rather than fabricate an 'Unknown' / seen-now value."""
+    if not last_active or last_active == "Unknown":
+        return None, None
+    return last_active, _parse_last_seen(last_active, scraped_at).isoformat()
 
 
 SEED_WARBANDS = ("RKF RiffRaff", "RKF Kings", "Sobaquitos")
@@ -276,8 +290,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                            WHERE snapshot_id = ? AND member_id = ?""",
                         (
                             m.name,
-                            m.last_active,
-                            _parse_last_seen(m.last_active, scraped_at).isoformat(),
+                            *_la_pair(m.last_active, scraped_at),
                             m.combat_power,
                             _parse_power_value(m.combat_power),
                             m.activeness,
@@ -297,8 +310,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             snapshot_id,
                             member_id,
                             m.name,
-                            m.last_active,
-                            _parse_last_seen(m.last_active, scraped_at).isoformat(),
+                            *_la_pair(m.last_active, scraped_at),
                             m.combat_power,
                             _parse_power_value(m.combat_power),
                             m.activeness,
@@ -322,8 +334,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         snapshot_id,
                         member_id,
                         m.name,
-                        m.last_active,
-                        _parse_last_seen(m.last_active, scraped_at).isoformat(),
+                        *_la_pair(m.last_active, scraped_at),
                         m.combat_power,
                         _parse_power_value(m.combat_power),
                         m.activeness,
@@ -374,6 +385,25 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
     return snapshot_id, actual_count
 
 
+# --- In-game User ID helpers ---
+
+
+def members_needing_ingame_id() -> list[tuple[int, str]]:
+    """(id, ingame_name) for members read in the latest scan that have no stored
+    in-game User ID yet. active=1 is latest-scan-only, so this is exactly the
+    on-screen roster · the ID-capture pass only taps members it can reach."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT id, ingame_name FROM members WHERE active = 1 AND ingame_id IS NULL"
+        ).fetchall()
+    return [(r["id"], r["ingame_name"]) for r in rows]
+
+
+def set_ingame_id(member_id: int, ingame_id: int) -> None:
+    with _connect() as conn:
+        conn.execute("UPDATE members SET ingame_id = ? WHERE id = ?", (ingame_id, member_id))
+
+
 # --- Name correction helpers ---
 
 
@@ -422,14 +452,39 @@ def _roster_exact(name: str, roster: set[str]) -> str | None:
     return None
 
 
+# Letters of the scripts real guild names use (Latin + CJK ideographs/ext + kana +
+# Hangul). A decorative tag glyph that OCRs as Greek (ψ/φ) or a symbol falls outside
+# these and is dropped; one that OCRs as a Latin letter (ψ→i/j) survives this filter
+# but is split off as a short token by _normalize_core's longest-token rule.
+_NAME_CHAR_RE = re.compile(
+    r"[a-z0-9一-鿿㐀-䶿぀-ヿ가-힯]"
+)
+# Whitespace + the bracket forms guild tags are wrapped in ('「ψ」'); used to split a
+# read into tag-vs-name tokens. OCR also misreads the brackets, but a delimiter
+# (bracket or space) almost always survives between the 1-2 char tag and the name.
+_TOKEN_SPLIT_RE = re.compile(r"[\s「-】\[\]()<>]+")
+
+
+def _clean_token(tok: str) -> str:
+    """Keep only name-script letters/digits in a token, lowercased · drops symbols
+    in place (so 'sc∅rpi∅n175' → 'scrpin175' rather than splitting on the ∅)."""
+    return "".join(ch for ch in _NAME_CHAR_RE.findall(tok.lower()))
+
+
 def _normalize_core(name: str) -> str:
-    """Strip decorative characters guild members historically bolted onto their
-    in-game names (brackets, symbols, and non-Latin glyphs like the Greek ψ used
-    as a tag) so 'ψ」Hira' and 'Hira' compare equal. Keeps ASCII letters/digits
-    only, lowercased. Returns '' for names with no ASCII alnum (e.g. pure-CJK
-    like '谢霆锋') · callers MUST skip the normalized tier when the core is empty,
-    or unrelated empty-core names would falsely fuse."""
-    return re.sub(r"[^a-z0-9]", "", name.lower())
+    """Reduce an OCR'd name to its comparable core via the LONGEST name token.
+
+    Guild members wear a decorative '「ψ」' tag whose glyph v5 reads wildly (ψ, 山, φ,
+    i, j, or dropped) and whose brackets also garble. Character-class filtering can't
+    remove a tag that lands as a Latin letter, but the tag is always a 1-2 char
+    fragment split off by a bracket or space, while the real name is the longest
+    token. So: split on whitespace+brackets, clean symbols within each token, and
+    return the longest survivor. 'ψ」Hira'→'hira', '山」谢霆锋'→'谢霆锋', 'i 」 arcanist'→
+    'arcanist'. Returns '' only when nothing name-like remains · callers MUST skip the
+    normalized tier on empty cores (rare now that CJK survives) to avoid false fusion."""
+    tokens = [_clean_token(t) for t in _TOKEN_SPLIT_RE.split(name)]
+    tokens = [t for t in tokens if t]
+    return max(tokens, key=len) if tokens else ""
 
 
 def _normalized_roster(roster: set[str]) -> dict[str, str]:
@@ -466,6 +521,61 @@ def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> s
     return None
 
 
+class RosterResolver:
+    """Single source of truth for OCR-name -> canonical roster name resolution,
+    shared by validate_names (guild scan), resolve_names (mode scans), and the
+    ID-capture pass. Chain: alias/correction -> exact -> normalized-core (strips
+    decorative tags, 'ψ」Hira' -> 'Hira') -> fuzzy@0.86, over the active roster +
+    corrections table. Indexes are built once at construction · build one resolver
+    and reuse it across many reads. learn=True records new normalized/fuzzy hits
+    back into the corrections table (and logs them) so the next scan resolves them
+    by alias; learn=False is read-only (the ID-capture pass)."""
+
+    def __init__(self, learn: bool = False):
+        self._corrections = get_corrections()
+        self._roster = _get_active_roster()
+        self._norm_idx = _normalized_roster(self._roster)
+        self._learn = learn
+
+    def resolve(self, name: str) -> str | None:
+        if name.lower() in self._corrections:
+            return self._corrections[name.lower()]
+        exact = _roster_exact(name, self._roster)
+        if exact:
+            return exact
+        norm = _normalized_match(name, self._norm_idx)
+        if norm:
+            self._record(name, norm, "matched core")
+            return norm
+        fuzzy = _fuzzy_match_known(name, self._roster, threshold=0.86)
+        if fuzzy:
+            self._record(name, fuzzy, "matched roster")
+        return fuzzy
+
+    def _record(self, original: str, canonical: str, how: str) -> None:
+        if self._learn:
+            print(f"  Auto-corrected '{original}' -> '{canonical}' ({how})")
+            save_correction(original, canonical)
+
+
+def make_roster_resolver():
+    """Read-only resolver callable (name -> canonical or None) for the ID-capture
+    pass · identifies a card the same way the scans do, without side effects."""
+    return RosterResolver(learn=False).resolve
+
+
+def identity_key(resolver: "RosterResolver", name: str) -> tuple[str, bool]:
+    """Cluster key for resolve-then-vote: (key, resolved). If the read resolves to a
+    canonical member, key is that canonical name and resolved=True · otherwise key is
+    the longest-token core (so noisy variants of an unknown name still cluster) and
+    resolved=False. Votes accumulate per true identity, so a name truncated in one
+    frame is outvoted by the frames that read it cleanly."""
+    canonical = resolver.resolve(name)
+    if canonical:
+        return canonical, True
+    return (_normalize_core(name) or name.lower()), False
+
+
 def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
     """Resolve each OCR'd name into the canonical active roster · never blocks on input.
 
@@ -474,44 +584,14 @@ def validate_names(members: list[Member]) -> tuple[list[Member], list[str]]:
     created with pending=1 by save_snapshot, and they are surfaced via REVIEW_NAMES
     so they can be approved or merged later.
     """
-    corrections = get_corrections()
-    roster = _get_active_roster()
-    norm_idx = _normalized_roster(roster)
+    resolver = RosterResolver(learn=True)
     uncertain: list[str] = []
-
     for m in members:
-        original = m.name
-
-        # 1. Known alias (case-insensitive)
-        if original.lower() in corrections:
-            m.name = corrections[original.lower()]
-            continue
-
-        # 2. Exact roster match (case-insensitive)
-        exact = _roster_exact(original, roster)
-        if exact:
-            m.name = exact
-            continue
-
-        # 3. Normalized-core match (strips decorative tags · 'ψ」Hira' -> 'Hira')
-        norm = _normalized_match(original, norm_idx)
-        if norm:
-            print(f"  Auto-corrected '{original}' -> '{norm}' (matched core)")
-            save_correction(original, norm)
-            m.name = norm
-            continue
-
-        # 4. Fuzzy match against the active roster
-        match = _fuzzy_match_known(original, roster, threshold=0.86)
-        if match:
-            print(f"  Auto-corrected '{original}' -> '{match}' (matched roster)")
-            save_correction(original, match)
-            m.name = match
-            continue
-
-        # 5. Unknown read — accept as-is, flag pending + for review
-        uncertain.append(original)
-
+        canonical = resolver.resolve(m.name)
+        if canonical:
+            m.name = canonical
+        else:
+            uncertain.append(m.name)  # unknown read — created pending by save_snapshot
     return members, uncertain
 
 
@@ -585,28 +665,17 @@ def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
     ({ocr_name: member_id}, unmatched). Unmatched names are NOT created as
     members (the roster scan owns membership) · callers skip those rows and
     surface them via REVIEW_NAMES."""
-    corrections = get_corrections()
-    roster = _get_active_roster()
-    norm_idx = _normalized_roster(roster)
+    resolver = RosterResolver(learn=True)
     with _connect() as conn:
         id_by_name = {r["ingame_name"].lower(): r["id"]
                       for r in conn.execute("SELECT id, ingame_name FROM members").fetchall()}
     resolved: dict[str, int] = {}
     unmatched: list[str] = []
     for raw in names:
-        name = corrections.get(raw.lower(), raw)
-        canonical = _roster_exact(name, roster)
-        if canonical is None:
-            canonical = _normalized_match(name, norm_idx)
-            if canonical:
-                save_correction(raw, canonical)
-        if canonical is None:
-            canonical = _fuzzy_match_known(name, roster, threshold=0.86)
-            if canonical:
-                save_correction(raw, canonical)
-        if canonical is None and name.lower() in id_by_name:
-            canonical = name  # known member outside the latest snapshot (e.g. pending)
-        if canonical:
+        canonical = resolver.resolve(raw)
+        if canonical is None and raw.lower() in id_by_name:
+            canonical = raw  # known member outside the latest snapshot (e.g. pending)
+        if canonical and canonical.lower() in id_by_name:
             resolved[raw] = id_by_name[canonical.lower()]
         else:
             unmatched.append(raw)

@@ -59,46 +59,78 @@ def _find_near_y(blocks, target_y, y_tolerance, x_min=0, x_max=9999):
     ]
 
 
-def parse_members(ocr_results: list) -> list[Member]:
+def _clean_name(t: str) -> str:
+    """Strip leading symbol junk (gender-icon OCR artifacts, decorative brackets)
+    and fix digit/letter confusion. [\\W_] is Unicode-aware so it keeps any-script
+    letters — CJK names like 「ψ」谢霆锋 survive instead of being wiped to ''.
+    Returns '' if nothing usable remains (e.g. an icon that OCR'd as its own block)."""
+    name = re.sub(r"^[\W_]+", "", t)
+    if not name:
+        return ""
+    # Normalize common OCR digit/letter confusion: l→1 and O→0 when surrounded by digits
+    name = re.sub(r"(?<=\d)l(?=\d|$)", "1", name)
+    name = re.sub(r"(?<=\d)O(?=\d|$)", "0", name)
+    return name
+
+
+def _is_name_block(t: str) -> bool:
+    """True for a left-region text block that could be a member name · excludes
+    the UI header, timestamps, power values, and known emblem/UI labels."""
+    return (not _is_skip_label(t)
+            and not t.startswith("Guild Member")
+            and not TIME_RE.match(_norm_time(t))
+            and not PURE_POWER_RE.match(t))
+
+
+def parse_member_anchors(ocr_results: list) -> list[tuple[str, int]]:
+    """(name, y) per visible member card · anchors on the NAME block itself (left
+    region) rather than the last-active timestamp. The capture pass only needs
+    name + y to tap the far-left avatar, so it must not depend on the timestamp:
+    a row whose time OCRs as e.g. '2lh ago' (1 read as l) fails TIME_RE and would
+    otherwise yield no anchor. Names are returned raw · the caller resolves them."""
     blocks = _parse_blocks(ocr_results)
-    timestamps = [(x, y, _norm_time(t)) for x, y, t in blocks if TIME_RE.match(_norm_time(t))]
+    anchors = []
+    for x, y, t in blocks:
+        if not (90 <= x <= 500) or not _is_name_block(t):
+            continue
+        name = _clean_name(t)
+        if name:
+            anchors.append((name, y))
+    return anchors
+
+
+def parse_members(ocr_results: list) -> list[Member]:
+    """Parse guild member cards, anchored on the NAME. A member's identity — the
+    fact they're in the list — is the primary signal; last_active, power, warband
+    and activeness are secondary attributes located relative to the name. Anchoring
+    on the name (not the last-active timestamp) means a garbled time ('2lh ago')
+    no longer drops an otherwise-readable member · last_active just falls back to
+    'Unknown' (nulled at save time). A name block is confirmed a real card only if
+    a secondary signal (power or timestamp) sits with it, so header text / a power
+    value misread with a leading letter never become phantom members."""
+    blocks = _parse_blocks(ocr_results)
 
     members = []
-    for ts_x, ts_y, ts_text in timestamps:
-        # Name: left side, within 40px of timestamp y
-        name_candidates = [
-            t for _, _, t in _find_near_y(blocks, ts_y, 40, x_min=90, x_max=500)
-            if not _is_skip_label(t)
-            and not t.startswith("Guild Member")
-            and not TIME_RE.match(t)
-            and not PURE_POWER_RE.match(t)
-        ]
-        if not name_candidates:
+    for nx, ny, nt in blocks:
+        if not (90 <= nx <= 500) or not _is_name_block(nt):
             continue
-        # Strip leading symbol junk (gender-icon OCR artifacts, decorative
-        # brackets). [\W_] is Unicode-aware so it keeps any-script letters —
-        # e.g. CJK names like 「ψ」谢霆锋 survive instead of being wiped to ''.
-        # If the icon OCRs as its own separate block before the real name (e.g.
-        # ♀ split from "Sandokai"), stripping it yields "" — try the next candidate
-        # rather than skipping the whole member.
-        name = ""
-        for candidate in name_candidates:
-            name = re.sub(r"^[\W_]+", "", candidate)
-            if name:
-                break
+        name = _clean_name(nt)
         if not name:
             continue
-        # Normalize common OCR digit/letter confusion: l→1 and O→0 when surrounded by digits
-        name = re.sub(r"(?<=\d)l(?=\d|$)", "1", name)
-        name = re.sub(r"(?<=\d)O(?=\d|$)", "0", name)
 
-        # Power / warband / activeness row ~95px below timestamp
-        power_row = _find_near_y(blocks, ts_y + 95, 50)
+        # last_active: a time-like block on the same row, right side (optional)
+        last_active = "Unknown"
+        for _, _, t in _find_near_y(blocks, ny, 40, x_min=600):
+            normt = _norm_time(t)
+            if TIME_RE.match(normt):
+                last_active = normt
+                break
 
+        # Power / warband / activeness row ~95px below the name row
+        power_row = _find_near_y(blocks, ny + 95, 50)
         combat_power = ""
         activeness = 0
         warband = ""
-
         for x, y, t in power_row:
             if x < 450:
                 m = POWER_RE.search(t)
@@ -119,9 +151,14 @@ def parse_members(ocr_results: list) -> list[Member]:
                     and t not in SKIP_NAMES):
                 warband = t
 
+        # Confirm it's a real card: a name with neither power nor timestamp nearby
+        # is OCR noise (header line, leading-letter power misread) — never a member.
+        if not combat_power and last_active == "Unknown":
+            continue
+
         members.append(Member(
             name=name,
-            last_active=ts_text if re.match(r"^\d|^online$", ts_text, re.IGNORECASE) else "Unknown",
+            last_active=last_active,
             combat_power=combat_power,
             activeness=activeness,
             warband=warband,
