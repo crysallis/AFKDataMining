@@ -123,7 +123,7 @@ def _read_boss_name(ocr_results) -> str:
 
 
 def _parse(img, ocr_results) -> list[dict]:
-    tiers = detect_tiers(img, "dream_realm")
+    tiers = detect_tiers(img, "dream_realm", threshold=0.75)
     raw = list(parse_rank_rows(img, ocr_results))
     rows = []
     for row in raw:
@@ -132,7 +132,7 @@ def _parse(img, ocr_results) -> list[dict]:
             continue
         score = _find_score(row.texts)
         rows.append({"name": row.name, "rank": row.rank, "score": score,
-                     "tier": tier_for_row(row.y, tiers) or "common"})
+                     "tier": tier_for_row(row.y, tiers)})
     return rows
 
 
@@ -210,6 +210,9 @@ def scan() -> None:
             continue
         entries = scroll_scan(_parse, f"Dream Realm {_date_label(day)}")
         rows = resolve_entries(entries, "Dream Realm")
+        for r in rows:
+            if not r.get("tier"):
+                r["tier"] = "common"
         saved = save_dream_realm(rows, day, day_boss_name or boss_name, day_boss_id)
         display_boss = day_boss_name or boss_name or "unknown"
         print(f"DREAM_REALM: saved {saved} entries for {day} (boss: {display_boss}).")

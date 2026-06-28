@@ -42,10 +42,11 @@ def _load_template(template_path: Path) -> np.ndarray | None:
     """Load (and cache) a template PNG. Warns once if it's missing."""
     key = str(template_path)
     if key not in _TEMPLATE_CACHE:
-        img = cv2.imread(key)
-        if img is None:
+        if not template_path.exists():
             logging.warning("Template not found: %s", template_path.name)
-        _TEMPLATE_CACHE[key] = img
+            _TEMPLATE_CACHE[key] = None
+        else:
+            _TEMPLATE_CACHE[key] = cv2.imread(key)
     return _TEMPLATE_CACHE[key]
 
 
@@ -71,18 +72,33 @@ def find_template(
     return None
 
 
+def _dominant_hue(img: np.ndarray) -> float:
+    """Median hue (OpenCV 0-179) of non-dark pixels. Returns -1 if no pixels qualify."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    mask = hsv[:, :, 2] > 40
+    hues = hsv[:, :, 0][mask]
+    return float(np.median(hues)) if len(hues) else -1.0
+
+
 def find_template_all(
     screen: np.ndarray,
     template_path: Path,
     threshold: float = 0.85,
     max_matches: int = 50,
+    hue_tol: int | None = None,
 ) -> list[tuple[int, int]]:
     """All (cx, cy) matches above threshold, greedy peak-picking with the
     template's own footprint suppressed after each hit so one icon doesn't
-    report a cloud of near-duplicate centers. Used for per-row tier icons."""
+    report a cloud of near-duplicate centers. Used for per-row tier icons.
+
+    hue_tol: if set, rejects hits whose screen-region median hue differs from
+    the template's median hue by more than this value. Prevents same-shape
+    icons of different colors (e.g. tier_hard blue vs tier_epic purple) from
+    cross-matching."""
     tmpl = _load_template(template_path)
     if tmpl is None:
         return []
+    tpl_hue = _dominant_hue(tmpl) if hue_tol is not None else -1.0
     result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
     h, w = tmpl.shape[:2]
     out: list[tuple[int, int]] = []
@@ -90,6 +106,11 @@ def find_template_all(
         _, max_val, _, max_loc = cv2.minMaxLoc(result)
         if max_val < threshold:
             break
+        if hue_tol is not None:
+            region = screen[max_loc[1]:max_loc[1] + h, max_loc[0]:max_loc[0] + w]
+            if abs(_dominant_hue(region) - tpl_hue) > hue_tol:
+                result[max_loc[1]:max_loc[1] + h, max_loc[0]:max_loc[0] + w] = -1.0
+                continue
         out.append((max_loc[0] + w // 2, max_loc[1] + h // 2))
         y0, y1 = max(0, max_loc[1] - h // 2), max_loc[1] + h // 2 + 1
         x0, x1 = max(0, max_loc[0] - w // 2), max_loc[0] + w // 2 + 1

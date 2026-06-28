@@ -106,7 +106,12 @@ AFKDataMining/
         db.py               SQLite schema, weekly upsert, name correction logic.
         import_history.py   One-time historical snapshot import.
         capture_template.py Utility to capture template PNGs from live screen.
+        capture_ids.py      ADB pass: taps each member avatar, OCRs User ID popup,
+                            stores ingame_id in DB. Runs after main scan for members
+                            with no stored ID.
         templates/          Reference PNG files for template matching.
+    test_rank_scan.py       Stress tester: takes N live ADB frames, reports rank #1
+                            detection rate split OCR vs template match.
     guild.db                SQLite database (shared with MeerBot).
     requirements.txt        Python dependencies.
 ```

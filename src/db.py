@@ -101,6 +101,14 @@ def init_db() -> None:
                 UNIQUE(name, season)
             );
 
+            CREATE TABLE IF NOT EXISTS dream_realm_boss_aliases (
+                alias   TEXT PRIMARY KEY,
+                boss_id INTEGER NOT NULL REFERENCES dream_realm_bosses(id)
+            );
+
+            INSERT OR IGNORE INTO dream_realm_boss_aliases (alias, boss_id)
+                SELECT 'croaker', id FROM dream_realm_bosses WHERE name = 'King Croaker';
+
             CREATE TABLE IF NOT EXISTS dream_realm_scores (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 member_id   INTEGER NOT NULL REFERENCES members(id),
@@ -643,9 +651,6 @@ def get_power_history(name: str) -> list[sqlite3.Row]:
 
 # --- Game-mode ranking scans ---
 
-# Hard OCR misreads of boss names · keys lowercase → canonical name (same idea as WARBAND_ALIASES)
-BOSS_ALIASES: dict[str, str] = {}
-
 
 def names_for_ids(ids: list[int]) -> dict[int, str]:
     """Map member ids to their canonical ingame_name · for logging which member
@@ -694,15 +699,19 @@ def _active_season_id(conn: sqlite3.Connection) -> int | None:
 
 
 def _resolve_boss(conn: sqlite3.Connection, text: str) -> tuple[str, int | None]:
-    """Resolve an OCR'd Dream Realm boss name: alias → exact → fuzzy (0.8).
-    An unknown boss inserts a new row tied to the active season so it surfaces
-    for admin review · mirrors _resolve_warband()."""
+    """Resolve an OCR'd Dream Realm boss name: alias → exact → fuzzy (best match).
+    Never inserts a new row — all bosses must be pre-loaded in dream_realm_bosses."""
     if not text:
         return "", None
     rows = conn.execute("SELECT id, name FROM dream_realm_bosses").fetchall()
     low = text.lower()
-    if low in BOSS_ALIASES:
-        low = BOSS_ALIASES[low].lower()
+    alias_row = conn.execute(
+        "SELECT boss_id FROM dream_realm_boss_aliases WHERE alias = ?", (low,)
+    ).fetchone()
+    if alias_row:
+        matched = next((r for r in rows if r["id"] == alias_row["boss_id"]), None)
+        if matched:
+            return matched["name"], matched["id"]
     for r in rows:
         if r["name"].lower() == low:
             return r["name"], r["id"]
@@ -711,14 +720,11 @@ def _resolve_boss(conn: sqlite3.Connection, text: str) -> tuple[str, int | None]
         s = SequenceMatcher(None, low, r["name"].lower()).ratio()
         if s > score:
             best, score = r, s
-    if best and score >= 0.8:
+    if best:
+        if score < 0.8:
+            print(f"REVIEW_BOSS: OCR read '{text}' · snapped to '{best['name']}' (score={score:.2f}) · add alias if wrong")
         return best["name"], best["id"]
-    season_id = _active_season_id(conn)
-    cur = conn.execute(
-        "INSERT INTO dream_realm_bosses (name, season) VALUES (?, ?)",
-        (text, season_id),
-    )
-    return text, cur.lastrowid
+    return "", None
 
 
 def get_boss_for_date(today_iso: str, today_boss_id: int,

@@ -239,12 +239,14 @@ The OCR engine returns a list of `(bounding_box, text, confidence)` tuples. `par
 @dataclass
 class Member:
     name: str
-    last_active: str    # raw string: "2h ago", "1d ago", "Online"
-    combat_power: str   # raw string: "109.0M", "85.3K"
-    activeness: int     # integer score
+    last_active: str | None  # raw string: "2h ago", "1d ago", "Online" · nullable
+    combat_power: str        # raw string: "109.0M", "85.3K"
+    activeness: int          # integer score
 ```
 
-Parsing uses regex to identify each field type from the OCR text and associates nearby text blocks by their vertical position on screen.
+Parsing is **identity-first**: the name anchor is found first, then the timestamp is treated as optional. This means a member whose active-time field is missing or garbled still produces a valid `Member` row (with `last_active = None`) rather than being dropped. `member_snapshots.last_active` is nullable in the DB; `save_snapshot` writes `NULL` instead of crashing on unreadable timestamps.
+
+`parse_member_anchors()` is a lighter variant used by `capture_ids.py` -- it returns `(name, anchor_y)` pairs without parsing the full card, so the ID-capture pass can locate cards by name without re-running the full member parse.
 
 ---
 
@@ -363,7 +365,12 @@ Shared scaffolding is in `modes/common.py`:
   any extra text blocks are gathered by vertical proximity. Ranks come from
   `_scan_rank_column()`, a single OCR pass over the left rank strip using
   PP-OCRv5 (it reads the calligraphic single-digit glyphs that grayscale/v3
-  miss).
+  miss). After the OCR pass, any rank **absent** from `_seen_ranks` is filled
+  by **template matching** against `rank_1_badge.png`, `rank_2_badge.png`,
+  `rank_3_badge.png`. In practice this almost always means rank #1: the gold
+  crown glyph OCRs successfully only ~1-5% of the time (measured over 100
+  trials) but matches the template at ~100%. Hits above `col_y_min` are
+  discarded to prevent the animated podium from producing false positives.
 - **`scroll_scan()`** · the open-ended scroll loop. Unlike the roster scrape's
   first-read-wins dedup, mode scans **collect every observation** from every
   frame and consolidate them by majority vote afterward (`_vote_entries()`):
@@ -402,7 +409,9 @@ offsets).
   is given a `value_re` to recognize the card; season comes from the DB, phase
   from the on-screen badge.
 - **arcane_lab** · three numeric columns (difficulty / floor / points) assigned
-  by nearest header x-position.
+  by nearest header x-position. The `Difficulty` and `Floor` column header
+  strings are explicitly skipped as name candidates so they can't be mistaken
+  for member names on the first visible frame.
 - **honor_duel** · the viewer's own "My Rank: Unranked" slot is skipped so it
   can't steal the adjacent card's rank.
 - **supreme_arena** · off Mon/Tue UTC; dismisses the Daily Calculation popup.
@@ -411,6 +420,25 @@ Results are written to per-mode tables (`*_rankings`, `dream_realm_scores`) keye
 by `member_id` + `scanned_at`; the bot reads the latest scan per member for
 `/member`. Each mode prints a `<MODE>:`-prefixed status line to stdout that the
 bot parses and posts to Discord.
+
+---
+
+## capture_ids.py
+
+A separate ADB pass that populates `members.ingame_id` (the in-game "User ID") for any member that doesn't yet have one. Runs after the main roster scan.
+
+**Flow:**
+
+1. Query `members_needing_ingame_id()` -- members where `ingame_id IS NULL`.
+2. Scroll through the guild member list (same scroll loop as the main scan).
+3. At each stop, OCR `FRAMES_PER_STOP=2` spread frames and collect `(name, anchor_y)` pairs from `parse_member_anchors()`.
+4. Resolve each name through the same roster matcher (`corrections → exact → fuzzy`) used by the main scan.
+5. For each target found on screen: `tap(AVATAR_X, anchor_y + AVATAR_Y_OFFSET)` to open the profile popup, OCR the popup for the `User ID: <number>` string, call `set_ingame_id()`, then `back()` to return to the list.
+6. Stop when all targets are found, or the list ends (two consecutive no-change frames).
+
+The two-frame-per-stop approach mirrors the mode scans: a card whose name the OCR flubs in one frame is often clean in the next. The multi-sample union means the tap decision uses the best available read.
+
+If a member's ID is not captured in one pass (the profile popup didn't render the ID in time), the script prints a warning and leaves `ingame_id` NULL so the next scan retries it.
 
 ---
 

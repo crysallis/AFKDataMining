@@ -299,7 +299,7 @@ def detect_tiers(img, mode: str, threshold: float = 0.85) -> list[tuple[int, str
         return out
     for path in sorted(tier_dir.glob("tier_*.png")):
         tier_name = path.stem.removeprefix("tier_")
-        for _, cy in find_template_all(img, path, threshold=threshold):
+        for _, cy in find_template_all(img, path, threshold=threshold, hue_tol=10):
             out.append((cy, tier_name))
     return out
 
