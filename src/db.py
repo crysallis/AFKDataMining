@@ -812,14 +812,27 @@ def save_arena(entries: list[dict]) -> int:
 
 
 def get_supreme_period() -> str | None:
-    """Supreme Arena runs Wednesday 00:00 UTC → Monday 00:00 UTC and is off
-    Monday + Tuesday (UTC). Returns the current period's Wednesday date as
-    period_start, or None on off-days (skip the scan entirely)."""
+    """Returns the period_start (Wednesday ISO date) to scan for, or None to skip.
+
+    Scan window: Monday and Tuesday UTC only (results are final after Mon 00:00).
+    Skips if a scan for this period was already saved today (once-per-day guard).
+    Mon weekday=0 → period ended last Wed (5 days ago).
+    Tue weekday=1 → period ended last Wed (6 days ago)."""
     now = _utcnow()
-    if now.weekday() in (0, 1):
+    if now.weekday() not in (0, 1):
         return None
-    wednesday = now - timedelta(days=now.weekday() - 2)
-    return wednesday.date().isoformat()
+    days_since_wednesday = (now.weekday() + 7 - 2) % 7
+    wednesday = (now - timedelta(days=days_since_wednesday)).date()
+    period = wednesday.isoformat()
+    today = now.date().isoformat()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT scanned_at FROM supreme_arena_rankings WHERE period_start = ? LIMIT 1",
+            (period,)
+        ).fetchone()
+    if row and row["scanned_at"][:10] == today:
+        return None
+    return period
 
 
 def save_supreme_arena(entries: list[dict]) -> int:

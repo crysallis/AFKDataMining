@@ -15,7 +15,7 @@ def scan() -> None:
     init_db()
     period = get_supreme_period()
     if period is None:
-        print("SUPREME_ARENA: off-day (Mon/Tue UTC), skipping.")
+        print("SUPREME_ARENA: skipping (not Mon/Tue UTC, or already scanned today).")
         return
     try:
         navigate_to_mode("supreme_arena")
