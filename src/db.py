@@ -811,19 +811,27 @@ def save_arena(entries: list[dict]) -> int:
     return len(entries)
 
 
+def current_supreme_period() -> str:
+    """Returns the period_start (most recent Wednesday, ISO date) for 'now' ·
+    always resolves, regardless of weekday. Wed itself is period start (0 days
+    back); Tue is the last day of the PREVIOUS period (6 days back)."""
+    now = _utcnow()
+    days_since_wednesday = (now.weekday() + 7 - 2) % 7
+    wednesday = (now - timedelta(days=days_since_wednesday)).date()
+    return wednesday.isoformat()
+
+
 def get_supreme_period() -> str | None:
-    """Returns the period_start (Wednesday ISO date) to scan for, or None to skip.
+    """Returns the period_start to scan for, or None to skip the LIVE scan.
 
     Scan window: Monday and Tuesday UTC only (results are final after Mon 00:00).
-    Skips if a scan for this period was already saved today (once-per-day guard).
-    Mon weekday=0 → period ended last Wed (5 days ago).
-    Tue weekday=1 → period ended last Wed (6 days ago)."""
+    Skips if a live scan for this period was already saved today (once-per-day
+    guard). Manual submissions (save_supreme_arena(..., force=True)) bypass this
+    entirely · they don't compete for the daily slot and can't suppress it."""
     now = _utcnow()
     if now.weekday() not in (0, 1):
         return None
-    days_since_wednesday = (now.weekday() + 7 - 2) % 7
-    wednesday = (now - timedelta(days=days_since_wednesday)).date()
-    period = wednesday.isoformat()
+    period = current_supreme_period()
     today = now.date().isoformat()
     with _connect() as conn:
         row = conn.execute(
@@ -835,8 +843,11 @@ def get_supreme_period() -> str | None:
     return period
 
 
-def save_supreme_arena(entries: list[dict]) -> int:
-    period = get_supreme_period()
+def save_supreme_arena(entries: list[dict], force: bool = False) -> int:
+    """force=True (manual/off-server submissions): writes for the CURRENT period
+    regardless of weekday, bypassing the live-scan's Mon/Tue + once-per-day gate
+    so a manual run never blocks that day's live scan from also saving."""
+    period = current_supreme_period() if force else get_supreme_period()
     if period is None:
         return 0
     scanned_at = _utcnow().isoformat()

@@ -29,6 +29,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, warbands, name_corrections, member_name_history) · bot creates only its bot-only tables · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` |
 | `src/capture_template.py` | ADB screencap → crop → save template |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
+| `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
 | `src/templates/` | OpenCV template images · must be captured via ADB |
 
 ## Database
@@ -88,6 +89,31 @@ pending members via the bot's `/review` or admin Members tab.
 - **Qwen2-VL** · requires CUDA (NVIDIA) or MPS (Apple). AMD RX 9070 XT has neither · do not investigate. AdbAutoPlayer's installed app also cannot run it on this hardware (falls back to same RapidOCR we already use).
 - **AdbAutoPlayer as a better OCR engine** · on this hardware they run PP-OCRv4 via rapidocr_onnxruntime, same family as ours. Their reliability advantage is **consensus voting** (collect all frames, vote per rank) not the engine. Port the voting approach, not the engine.
 - **AdGuard: excluding `HD-Player.exe`** · unblocks BlueStacks ads but does NOT fix ADB throttling. Always exclude `C:\platform-tools\adb.exe` instead.
+
+## Manual Scan (off-server members)
+Some guild members play on a different server/district and never appear in the
+live scan's guild-filtered ranking list. `/sa-manual` in the bot lets any member
+submit a Supreme Arena screenshot (any resolution/aspect ratio — phone
+screenshots, not ADB captures) and have it parsed the same way.
+
+- `src/modes/manual_scan.py` · standalone entrypoint (`python -m modes.manual_scan <image_path>`),
+  not part of `scraper.py`'s ADB-driven CLI. No BlueStacks/ADB dependency.
+- `parse_manual_rows()` anchors purely on relative OCR-block geometry (nearest
+  rank-digit block to each name block; podium excluded via the same wide-x-spread
+  heuristic `parse_rank_rows` uses) — no fixed pixel constants, unlike the live
+  scanner's `_scan_rank_column` (tuned to BlueStacks' 1080-wide captures, and
+  confirmed to silently return zero rows on a wider/letterboxed image).
+  Verified against a 1080x2404 and a letterboxed 2560x1440 (partial Traditional
+  Chinese UI) screenshot — do not merge this logic back into `parse_rank_rows`.
+- Unmatched names are reported (`MANUAL_REVIEW:` stdout line) but never written —
+  membership/creation still belongs to the roster scan, same rule as
+  `resolve_entries()`. Bot pings crysallis in `COMMAND_LOG_CHANNEL_ID` with the
+  image when any name needs review.
+- `save_supreme_arena(entries, force=True)` bypasses the live scan's Mon/Tue +
+  once-per-day gate, writing to `current_supreme_period()` (the period-key
+  math alone, refactored out of `get_supreme_period()`) regardless of weekday.
+  `INSERT OR REPLACE` on `(member_id, period_start)` means a manual write and a
+  same-day live scan never conflict or suppress each other — last write wins.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.
