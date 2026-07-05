@@ -30,6 +30,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/capture_template.py` | ADB screencap → crop → save template |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
 | `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
+| `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite |
 | `src/templates/` | OpenCV template images · must be captured via ADB |
 
 ## Database
@@ -73,6 +74,48 @@ pending members via the bot's `/review` or admin Members tab.
 - **`PURE_POWER_RE`** (anchored) guards the name slot: a candidate is a power
   value only if it STARTS as one. The old `POWER_RE.search()` substring match
   dropped real names containing digits+K/M (e.g. `Ramz78k` matched `78k`).
+- **`NAME_X_MIN = 130`** (in `parser.py`, used by both `parse_members` and
+  `parse_member_anchors`) excludes member title badges (Confidant, Warmaster,
+  Envoy, Riff, Raff, Sage, ... — an open-ended, growing list) from being read
+  as names. Titles render as their own OCR block far-left over the avatar
+  (left-edge x measured 51-84 across multiple live captures), ~40-47px above
+  the real name row. Before this fix only the `90 <= x` lower bound stood
+  between a title and being accepted as a name — "Warmaster" at left_x=84
+  cleared it by 6px and confirmed-live produced a phantom member carrying
+  the real member's own power/activeness (grabbed from the row ~95px below,
+  same offset `parse_members` uses to find the real power row). Because the
+  title list keeps growing, this is a **structural** (position-based) fix,
+  not a name-based skip list like `SKIP_NAMES` — don't add new titles there
+  instead of relying on this bound. 130 sits ~45px above the highest measured
+  title and ~105px below the closest measured real name (`"iat"`, a 3-char
+  name, left_x=235) — biased toward the title side of the gap since an
+  unmeasured edge case (a name whose gender-icon glyph merges into the same
+  OCR block, further left than a clean split) is more likely on the name
+  side, and dropping a real member is worse than a title phantom.
+
+## AFK Stages Phase Navigation
+Phase 2 dropped in-game (2026-07-04). Rankings screen has a "Phase N" tab bar
+(same position/icon as Dream Realm's date bar — `dream_realm_right.png`
+reused for paging once Phase 3 exists and pushes Phase 1 off-screen).
+`_select_phase(phase)` in `afk_stages.py` OCR-taps the target tab, tolerant of
+"Phase 1" misreading as "Phase l" (lowercase L) — same class of bug as
+`_norm_time`'s l/1 fix, confirmed live.
+
+A phase stays fully scannable/guild-filterable after being superseded, but its
+card format changes: cleared members show `Cleared` + a date + a time instead
+of a live `Phase Progress` number. Apex 1000 is the final stage, so `Cleared`
+is recorded as that fixed value — the date/time itself isn't stored.
+
+Business rule: once a new phase starts, the previous phase gets scanned
+**one final time**, then only the current phase from then on — not every
+phase every scan. Detection signal is the CURRENT phase's row-count being
+zero for this season (not the previous phase's rows existing — those persist
+forever, so their presence can't distinguish "not yet backfilled" from
+"already backfilled"). Self-healing: a scan that dies mid-backfill leaves the
+current phase at 0 rows, so it retries next run. The backfill scan passes
+`reentry_fn=None` — `make_reentry_fn`'s second pass re-taps `rankings_btn`,
+which lands back on the *current* phase tab by default, and would otherwise
+silently mix current-phase reads into the backfilled phase's data.
 
 ## ADB reliability
 - `device.py` `_shell` is leak-free: synchronous, context-managed connections;
@@ -114,6 +157,55 @@ screenshots, not ADB captures) and have it parsed the same way.
   math alone, refactored out of `get_supreme_period()`) regardless of weekday.
   `INSERT OR REPLACE` on `(member_id, period_start)` means a manual write and a
   same-day live scan never conflict or suppress each other — last write wins.
+
+## Clashfronts (sign-up/selection tracking)
+New guild event (recurring, ~3 weeks apart, exact cadence still unclear).
+Members sign up guild-wide; leadership selects/approves a subset (30 slots
+seen so far) via the in-game "Manage Sign-Ups" screen — one screen, one row
+per signed-up member, a green (selected) or grey (unselected) checkmark per
+row. No rank numbers on this screen at all.
+
+- Nav is NOT `navigate_to_mode()` — that function always ends by tapping a
+  Rankings-style control, wrong destination here. `navigate_to_clashfronts_signups()`
+  in `nav.py` reuses the card-tap/OCR-scroll portion but OCR-taps `"ManageSign"`
+  instead (the wrapped two-line button "Manage Sign-Ups" OCRs as `"ManageSign"` +
+  `"Ups"` in separate blocks — targeting "Manage" alone only scores 0.75 fuzzy-match
+  against `_ocr_tap_text`'s 0.82 threshold, found live before it shipped).
+- No `apply_guild_filter()` — this screen is inherently guild-only already.
+- `parse_rank_rows`/`_scan_rank_column` don't apply (no rank numbers) — `clashfronts.py`
+  has its own name-block parser, checkmark state read via the existing
+  `detect_tiers()`/`tier_for_row()` template-match pattern (`templates/clashfronts/tier_selected.png` /
+  `tier_not_selected.png`, captured live — hue_tol=10 cleanly separates green/grey).
+- `clashfronts_signups` table: single kept scan, **full-list overwrite**
+  (`save_clashfronts_signups()` does `DELETE` then re-`INSERT`, not
+  `INSERT OR REPLACE` merge) — a member absent from this scan's rows must NOT
+  linger as "signed up" from a stale previous scan.
+- **Checkmark misread bug found and fixed**: the floating scroll-nav button
+  (a circular down-arrow that overlays the bottom-most visible row) corrupts
+  that row's checkmark template match in whichever frame it lands there.
+  `tier_for_row` returns `None` for an unreadable checkmark, but `_parse`
+  originally collapsed that to `False` (`tier == "selected"`) — an occluded
+  GREEN check therefore cast a confident False vote that competed with (and
+  sometimes won against) the clean True reads of the same row from other
+  scroll stops. Caught via the game's own "30/30 participants" counter as a
+  ground-truth invariant: a full scan only produced 26 `selected=True` rows,
+  with the 4 missing ones appearing as isolated `False`s inside an otherwise
+  unbroken True run — a monotonicity violation, since selected members always
+  sort before unselected ones. Fixed by making `_parse` emit `None` (abstain)
+  for an unreadable checkmark instead of `False` — `_vote_entries` already
+  drops `None` values per-field, so occluded frames stop competing and the
+  clean reads decide. Re-verified: raw voted entries now show exactly 30
+  `True` with a clean True→False boundary, matching 30/30 exactly.
+- Verified live end-to-end after the fix: 69/70 raw voted entries resolved
+  and saved (30 selected, 39 not-selected, matching 30/30 exactly), 1
+  unmatched correctly dropped via `REVIEW_NAMES` (not written, zero pending
+  members created — resolves against the real `members` table exactly like
+  every other mode scan).
+- `capture_template.py` had a latent bug fixed alongside this: `cv2.imwrite`'s
+  return value was never checked, so a nested-path template name (e.g.
+  `clashfronts/tier_selected`) silently saved nothing when the subdirectory
+  didn't exist yet, while still printing "Saved". Now uses
+  `mkdir(parents=True)` and checks the write succeeded.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.

@@ -351,12 +351,14 @@ This absolute value is what the inactivity alert queries against, since relative
 
 Separate from the guild roster scrape above, the scraper also captures per-member
 **rankings** for six game modes: `dream_realm`, `afk_stages`, `arena`,
-`supreme_arena`, `honor_duel`, `arcane_lab`. Each lives in `src/modes/<mode>.py`
-with a `scan()` entry point and is run via `scraper.py` CLI flags
-(`--arena`, `--honor-duel`, ...) or the bot's `/scan` (each gated by a
-`SCAN_*` bot-config key, toggled in the admin Scan Modes tab). With no flags the
-scraper runs only the roster scan; passing mode flags runs just those modes (add
-`--guild` to also run the roster scan in the same invocation).
+`supreme_arena`, `honor_duel`, `arcane_lab` — plus `clashfronts`, which tracks
+sign-up/selection status rather than a ranking (see below). Each lives in
+`src/modes/<mode>.py` with a `scan()` entry point and is run via `scraper.py`
+CLI flags (`--arena`, `--honor-duel`, `--clashfronts`, ...) or the bot's
+`/scan` (each gated by a `SCAN_*` bot-config key, toggled in the admin Scan
+Modes tab). With no flags the scraper runs only the roster scan; passing mode
+flags runs just those modes (add `--guild` to also run the roster scan in the
+same invocation).
 
 Shared scaffolding is in `modes/common.py`:
 
@@ -415,11 +417,22 @@ offsets).
 - **honor_duel** · the viewer's own "My Rank: Unranked" slot is skipped so it
   can't steal the adjacent card's rank.
 - **supreme_arena** · off Mon/Tue UTC; dismisses the Daily Calculation popup.
+- **clashfronts** · not a rankings screen — navigates to "Manage Sign-Ups"
+  instead of tapping a Rankings button, and skips `apply_guild_filter()` (that
+  screen is already guild-only). No rank numbers; each row is a signed-up
+  member with a green/grey checkmark for selected/not-selected, read via
+  `detect_tiers()`/`tier_for_row()` template matching rather than
+  `parse_rank_rows()`. `clashfronts_signups` is a **full-list overwrite** each
+  scan (`DELETE` then re-`INSERT`), not an upsert-by-key like the other
+  per-mode tables — table membership itself is the "signed up" signal, so a
+  member absent from one scan's rows must not linger as signed-up from a
+  stale previous scan.
 
-Results are written to per-mode tables (`*_rankings`, `dream_realm_scores`) keyed
-by `member_id` + `scanned_at`; the bot reads the latest scan per member for
-`/member`. Each mode prints a `<MODE>:`-prefixed status line to stdout that the
-bot parses and posts to Discord.
+Results are written to per-mode tables (`*_rankings`, `dream_realm_scores`,
+`clashfronts_signups`) keyed by `member_id` (+ `scanned_at`, or `period_start`
+for supreme_arena); the bot reads the latest scan per member for `/member`
+(rankings) or `/clashfronts` (sign-ups). Each mode prints a `<MODE>:`-prefixed
+status line to stdout that the bot parses and posts to Discord.
 
 ---
 

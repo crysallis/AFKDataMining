@@ -56,17 +56,21 @@ Alternatively, trigger a scan from Discord using `/scan` (authorized user only).
 ### Game-mode ranking scans
 
 Beyond the roster scrape, the scraper can capture per-member rankings for six game
-modes. Each is enabled with a flag (with no flags, only the roster scan runs):
+modes, plus Clashfronts sign-up/selection tracking. Each is enabled with a flag
+(with no flags, only the roster scan runs):
 
 ```powershell
 .\venv\Scripts\python.exe src\scraper.py --arena --honor-duel
-# flags: --dream-realm --afk-stages --arena --supreme-arena --honor-duel --arcane-lab
+# flags: --dream-realm --afk-stages --arena --supreme-arena --honor-duel --arcane-lab --clashfronts
 ```
 
-These scans read every ranking card across many frames and resolve the final
-value by majority vote, so they survive OCR noise and animated rows. Results go
-to per-mode tables in `guild.db` and feed the bot's `/member` command. See
-`ARCHITECTURE.md` for the voting and rank-reading details.
+The six ranking scans read every ranking card across many frames and resolve
+the final value by majority vote, so they survive OCR noise and animated rows.
+`--clashfronts` instead scans the "Manage Sign-Ups" roster (not a rankings
+screen) and records who's signed up and who's been selected/approved. Results
+go to per-mode tables in `guild.db` and feed the bot's `/member` (rankings) or
+`/clashfronts` (sign-ups) commands. See `ARCHITECTURE.md` for the voting and
+rank-reading details.
 
 ---
 
