@@ -72,9 +72,11 @@ def main() -> None:
         print(f"Error: empty crop for ({x1},{y1})-({x2},{y2}). Check coordinates.")
         sys.exit(1)
 
-    TEMPLATES_DIR.mkdir(exist_ok=True)
     out = TEMPLATES_DIR / f"{name}.png"
-    cv2.imwrite(str(out), crop)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(out), crop):
+        print(f"Error: cv2.imwrite failed to save {out}")
+        sys.exit(1)
     print(f"Saved '{name}' ({x2 - x1}x{y2 - y1} px) -> {out}")
 
 

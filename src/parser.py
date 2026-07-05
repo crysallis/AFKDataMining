@@ -16,6 +16,20 @@ POWER_RE = re.compile(r"([\d.]+)\s*([KM])", re.IGNORECASE)
 PURE_POWER_RE = re.compile(r"^[\d.]+\s*[KM]\b", re.IGNORECASE)
 SKIP_NAMES = {"Friends", "Guild Announcement", "Me", "Fellowship", "Activeness", "Descending", "Warband"}
 SKIP_LOWER = {s.lower() for s in SKIP_NAMES}
+# Member title badges (Confidant, Warmaster, Envoy, Riff, Raff, Sage, ...) render
+# as their own OCR block at the far left over the avatar (left-edge x ~50-84 in
+# every capture measured), ~40-47px above the actual name row. The title list is
+# open-ended -- new titles appear with no warning -- so this excludes them
+# structurally by position instead of by name, unlike SKIP_NAMES. 130 sits well
+# inside the gap to the closest measured real name-block left edge (235, a 3-char
+# name "iat"): titles topped out at 84, so this keeps ~45px of margin on the title
+# side while staying clear of any real name whose left edge might sit lower than
+# 235 (e.g. a name with its gender-icon glyph merged into the same OCR block).
+# Without this, a title's OCR block passes every other name-block check and
+# becomes a phantom member carrying whatever power/activeness happens to sit
+# ~95px below it (i.e. the REAL member's own stats) -- confirmed live 2026-07-04,
+# "Warmaster" (left_x=84) produced a phantom duplicate of Caernafon.
+NAME_X_MIN = 130
 
 
 def _is_skip_label(t: str) -> bool:
@@ -91,7 +105,7 @@ def parse_member_anchors(ocr_results: list) -> list[tuple[str, int]]:
     blocks = _parse_blocks(ocr_results)
     anchors = []
     for x, y, t in blocks:
-        if not (90 <= x <= 500) or not _is_name_block(t):
+        if not (NAME_X_MIN <= x <= 500) or not _is_name_block(t):
             continue
         name = _clean_name(t)
         if name:
@@ -112,7 +126,7 @@ def parse_members(ocr_results: list) -> list[Member]:
 
     members = []
     for nx, ny, nt in blocks:
-        if not (90 <= nx <= 500) or not _is_name_block(nt):
+        if not (NAME_X_MIN <= nx <= 500) or not _is_name_block(nt):
             continue
         name = _clean_name(nt)
         if not name:
