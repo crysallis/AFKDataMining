@@ -165,6 +165,12 @@ def init_db() -> None:
                 points      INTEGER,
                 scanned_at  TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS clashfronts_signups (
+                member_id  INTEGER PRIMARY KEY REFERENCES members(id),
+                selected   INTEGER NOT NULL DEFAULT 0,
+                scanned_at TEXT NOT NULL
+            );
         """)
         # Seed known warbands (idempotent)
         for i, name in enumerate(SEED_WARBANDS):
@@ -878,4 +884,21 @@ def save_arcane_lab(entries: list[dict]) -> int:
                VALUES (?, ?, ?, ?, ?, ?)""",
             [(e["member_id"], e.get("rank"), e.get("difficulty"), e.get("floor"),
               e.get("points"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_clashfronts_signups(entries: list[dict]) -> int:
+    """Full-list replace: a member absent from this scan's entries has left the
+    sign-up list since the last scan (unlike the other mode tables, this isn't
+    an append/overwrite-by-key history -- membership in the table IS the
+    'signed up' signal, so a stale row would wrongly keep showing them as
+    signed up)."""
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.execute("DELETE FROM clashfronts_signups")
+        conn.executemany(
+            """INSERT INTO clashfronts_signups (member_id, selected, scanned_at)
+               VALUES (?, ?, ?)""",
+            [(e["member_id"], 1 if e.get("selected") else 0, scanned_at) for e in entries])
+        conn.commit()
     return len(entries)

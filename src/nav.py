@@ -302,6 +302,7 @@ MODE_CARD_LABEL: dict[str, str] = {
     "supreme_arena": "Supreme Arena",
     "honor_duel":    "Honor Duel",
     "arcane_lab":    "Labyrinth",
+    "clashfronts":   "Clashfronts",
 }
 
 # All modes use the same rankings circle icon (rankings_btn.png).
@@ -427,6 +428,55 @@ def navigate_to_mode(mode: str, flow_attempts: int = 3) -> None:
 
     cv2.imwrite(str(TEMPLATES_DIR.parent / f"debug_nav_fail_{mode}.png"), screenshot())
     raise RuntimeError(f"Could not reach {mode} ranking after {flow_attempts} attempts.")
+
+
+def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
+    """Navigate from any screen to the Clashfronts 'Manage Sign-Ups' list.
+
+    Route: overview → battle_modes_btn → OCR 'Clashfronts' card → OCR 'Manage'
+    (button reads 'Manage Sign-Ups' across two lines; 'Manage' alone is a
+    stable, distinctive OCR target). Unlike navigate_to_mode, this never taps
+    a Rankings-style control -- Clashfronts' target screen is a signup roster,
+    not a ranking list, and needs no apply_guild_filter() call afterward since
+    that screen only ever shows guild members."""
+    from ocr import ocr_image
+    card_label = MODE_CARD_LABEL["clashfronts"]
+    logging.info("Navigating to Clashfronts sign-ups.")
+
+    for attempt in range(1, flow_attempts + 1):
+        if not navigate_to_overview():
+            logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
+            continue
+
+        if not _tap_to_reach(
+            lambda s: find_template(s, _t("battle_modes_btn"), threshold=0.75),
+            _is_at_battle_modes, "battle_modes", fallback_xy=None,
+        ):
+            logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
+            continue
+
+        if not _ocr_tap_text(
+            ocr_image, card_label, f"card:{card_label}",
+            scroll_between=True, attempts=5,
+        ):
+            logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
+            continue
+        _wait_until_stable()
+
+        # OCR reads the wrapped two-line button ('Manage Sign-' / 'Ups') as
+        # 'ManageSign' + 'Ups' in separate blocks -- 'Manage' alone only
+        # scores 0.75 against 'managesign' (below the 0.82 match threshold),
+        # so target the actual glued fragment that appears on screen.
+        if not _ocr_tap_text(ocr_image, "ManageSign", "clashfronts:manage_btn", attempts=3):
+            logging.warning("'Manage' button not found (flow attempt %d).", attempt)
+            continue
+        _wait_until_stable()
+
+        logging.info("Arrived at Clashfronts sign-ups list.")
+        return
+
+    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_clashfronts.png"), screenshot())
+    raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
 
 
 def apply_guild_filter() -> bool:
