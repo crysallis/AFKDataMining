@@ -1,0 +1,29 @@
+#!/bin/sh
+# Blocks a commit that adds a new table to src/db.py's schema without
+# mentioning that table name anywhere in CLAUDE.md. String-match only -
+# it can't judge prose accuracy, just that the name shows up somewhere,
+# which is enough to catch the schema-list drift this guards against.
+# Enable with: git config core.hooksPath githooks
+
+db_staged=$(git diff --cached --name-only | grep -x "src/db.py")
+[ -z "$db_staged" ] && exit 0
+
+claude_md="CLAUDE.md"
+[ -f "$claude_md" ] || exit 0
+
+new_tables=$(git diff --cached -- src/db.py | grep '^+' | grep -oE 'CREATE TABLE IF NOT EXISTS [A-Za-z_]+' | awk '{print $NF}')
+[ -z "$new_tables" ] && exit 0
+
+missing=""
+for t in $new_tables; do
+    grep -q "$t" "$claude_md" || missing="$missing $t"
+done
+
+if [ -n "$missing" ]; then
+    echo "pre-commit: src/db.py adds table(s) not mentioned in CLAUDE.md:" >&2
+    for t in $missing; do echo "  - $t" >&2; done
+    echo "Update the schema list in CLAUDE.md (or add the name if this is intentional), then re-stage." >&2
+    exit 1
+fi
+
+exit 0

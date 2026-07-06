@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "githooks/check-db-schema-doc.sh 2>&1 1>/dev/null; true",
+            "statusMessage": "Checking db.py schema is documented..."
+          }
+        ]
+      }
+    ]
+  }
+}
