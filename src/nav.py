@@ -303,6 +303,7 @@ MODE_CARD_LABEL: dict[str, str] = {
     "honor_duel":    "Honor Duel",
     "arcane_lab":    "Labyrinth",
     "clashfronts":   "Clashfronts",
+    "guild_duel":    "Guild Duel",
 }
 
 # All modes use the same rankings circle icon (rankings_btn.png).

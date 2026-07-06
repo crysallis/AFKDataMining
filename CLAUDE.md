@@ -5,6 +5,8 @@ Python · ADB (Android Debug Bridge) · OpenCV · RapidOCR (onnxruntime) · SQLi
 Scrapes guild roster data from AFK Journey running in BlueStacks, saves to SQLite.
 Companion bot at `C:\vscode\DiscordBotAfkJ`.
 See global context at `C:\Users\crysa\.claude\CLAUDE.md`.
+See `README.md` for setup/run commands and `--mode` flags; see `ARCHITECTURE.md` for
+mode-scan voting and rank-reading internals.
 
 ## Session Start
 
@@ -25,12 +27,18 @@ Window screenshots are scaled/different pixel space · templates will not match.
 ## Key Files
 | File | Purpose |
 |---|---|
-| `src/scraper.py` | Main entry point · navigates game, captures screen, runs OCR |
-| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, warbands, name_corrections, member_name_history) · bot creates only its bot-only tables · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` |
+| `src/scraper.py` | Main entry point · navigates game, captures screen, runs OCR · CLI flags for guild scan + each mode (see README.md) |
+| `src/nav.py` | Screen navigation via ADB + template matching · screen-aware routing back to guild home |
+| `src/device.py` | ADB interface (screenshot, tap, swipe, scroll) · leak-free `_shell`, retry/restart logic |
+| `src/ocr.py` | Shared OCR wrapper (RapidOCR PP-OCRv5, v3 fallback) |
+| `src/parser.py` | Extracts structured `Member` data from OCR results · `NAME_X_MIN`, `PURE_POWER_RE`, `TOTAL_RE` live here |
+| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, warbands, name_corrections, member_name_history, dream_realm_bosses, dream_realm_boss_aliases, dream_realm_scores, afk_stage_rankings, arena_rankings, supreme_arena_rankings, honor_duel_rankings, arcane_lab_rankings, clashfronts_signups, guild_duel_rankings) · bot creates only its bot-only tables · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` · `RosterResolver.resolve()` tries the raw OCR'd name first, falling back to `_strip_merged_tag()` only if that fails (see Gotchas) |
 | `src/capture_template.py` | ADB screencap → crop → save template |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
+| `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name |
+| `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote |
 | `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
-| `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite |
+| `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite · detects and skips the post-signup deployment map |
 | `src/templates/` | OpenCV template images · must be captured via ADB |
 
 ## Database
@@ -206,6 +214,70 @@ row. No rank numbers on this screen at all.
   `clashfronts/tier_selected`) silently saved nothing when the subdirectory
   didn't exist yet, while still printing "Saved". Now uses
   `mkdir(parents=True)` and checks the write succeeded.
+- **Post-signup deployment screen**: once sign-ups close, tapping the
+  Clashfronts card leads straight to the battle deployment map ("Round 1", a
+  "Deploy" button) instead of "Manage Sign-Ups" — nothing to scan there.
+  `navigate_to_clashfronts_signups()` fails to find the "ManageSign" button on
+  this screen and raises after retrying; `clashfronts.py`'s `scan()` catches
+  that, checks `_on_deploy_screen()` (OCR for the "Deploy" button text, no
+  template needed), presses back, and exits cleanly with a `CLASHFRONTS:`
+  status line instead of surfacing `MODE_FAILED`. Same shape as
+  `supreme_arena.py`'s inactive-screen handling, but text-detected rather than
+  template-matched since "Deploy" is plain button text.
+
+## Guild Duel (weekly crest tracking)
+New recurring guild-vs-guild event (weekly). Members earn "crests" Mon-Fri;
+Sat-Sun the guild spends them attacking a boss. An end-of-event "duel merit"
+stat is expected eventually but its shape is unknown until a full cycle
+completes — not tracked yet, intentionally out of scope.
+
+- Ranking screen ("Guild Duel Total Crest Rankings") is laid out like every
+  other mode's Rankings screen (podium + gray-numbered list, rank left,
+  numeric value far right) — `parse_rank_rows()`/`scroll_scan()` needed no
+  changes for the layout itself.
+- **No in-game guild filter exists on this screen** — unlike every other
+  mode, both guilds' contributors are listed together, since this is a
+  guild-vs-guild event and the Rankings screen shows both sides. Each row
+  carries its own guild tag directly under the member's name (e.g.
+  `"RKF RiffRaff"`, coincidentally the same string as the `RKF RiffRaff`
+  *warband* name in `SEED_WARBANDS` — unrelated collision, harmless since
+  `_warband_skip_set()` already keeps warband names out of name detection).
+  `guild_duel.py`'s `_is_our_guild()` checks that tag (lenient
+  substring/fuzzy@0.75 match against `"rkf riffraff"`, tolerant of OCR noise
+  on the tag) and drops any row that isn't ours *before* name resolution —
+  deliberately not relying on `resolve_names()`'s fuzzy@0.86 roster match to
+  sort out which guild a row belongs to, since a similarly-named member of
+  the other guild could otherwise fuzzy-match onto one of ours and
+  misattribute their crests.
+- Getting the guild tag into reach of that check required a shared-code fix:
+  `parse_rank_rows()`'s fallback path only collected extra text blocks at
+  `x > 700` (tuned for right-side info like Dream Realm's score), but the
+  guild tag sits in the name's own x-range, one line below it. Widened to
+  `x > rank_x_max` (any non-numeric block near the row, excluding the name's
+  own block) — verified safe for the two other consumers of `row.texts`
+  (`dream_realm.py`, `afk_stages.py`), since both pattern-match specific text
+  shapes rather than taking the first available block.
+- `current_guild_duel_period()` anchors to the most recent Monday (mirrors
+  `current_supreme_period()`'s Wednesday-anchor formula) but applies **no**
+  scan-window gating — Supreme Arena's Mon/Tue-only + once-per-day guard is
+  specific to that mode's result-finality window; Guild Duel crests can be
+  usefully scanned any day Mon-Fri, so `save_guild_duel()` always writes via
+  `INSERT OR REPLACE` against the current period.
+- **Found and fixed a pre-existing name-truncation bug while verifying this
+  live**: `parse_rank_rows` used to strip what it guessed was an OCR-merged
+  server tag off the end of every name (`"Kits282"` → `"Kit"`), via a regex
+  matching a trailing `[Ss]?\d{3,4}` shape. That guess is unresolvable from
+  the string alone — it also silently truncated real names ending in digits
+  or "s" (`"Scorpion175"` → `"Scorpion"`, unmatched despite an existing
+  `name_corrections` entry keyed on the untruncated name; `"Crysallis"` →
+  `"Crysalli"`, luckily still fuzzy-matched so it wasn't visibly broken).
+  Fixed by moving the strip into `RosterResolver.resolve()` as a fallback: try
+  the raw OCR'd name against the full alias/exact/normalized-core/fuzzy chain
+  first, only fall back to `_strip_merged_tag()` if the raw name doesn't
+  resolve. Preserves the original merged-tag case (`"Kits282"` fails raw →
+  strips to `"Kit"` → resolves) while no longer mangling real names before
+  they ever reach the resolver. Verified live: 47/47 names matched on the
+  next scan (up from 45/46), zero regressions.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.

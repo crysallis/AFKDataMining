@@ -139,7 +139,7 @@ def scrape_guild() -> tuple[list[Member], int]:
         _done.set()
 
 
-MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts")
+MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel")
 
 
 def run_modes(enabled: list[str]) -> None:

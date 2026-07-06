@@ -350,11 +350,11 @@ This absolute value is what the inactivity alert queries against, since relative
 ## Game-mode ranking scans (`modes/`)
 
 Separate from the guild roster scrape above, the scraper also captures per-member
-**rankings** for six game modes: `dream_realm`, `afk_stages`, `arena`,
-`supreme_arena`, `honor_duel`, `arcane_lab` — plus `clashfronts`, which tracks
-sign-up/selection status rather than a ranking (see below). Each lives in
-`src/modes/<mode>.py` with a `scan()` entry point and is run via `scraper.py`
-CLI flags (`--arena`, `--honor-duel`, `--clashfronts`, ...) or the bot's
+**rankings** for seven game modes: `dream_realm`, `afk_stages`, `arena`,
+`supreme_arena`, `honor_duel`, `arcane_lab`, `guild_duel` — plus `clashfronts`,
+which tracks sign-up/selection status rather than a ranking (see below). Each
+lives in `src/modes/<mode>.py` with a `scan()` entry point and is run via `scraper.py`
+CLI flags (`--arena`, `--honor-duel`, `--clashfronts`, `--guild-duel`, ...) or the bot's
 `/scan` (each gated by a `SCAN_*` bot-config key, toggled in the admin Scan
 Modes tab). With no flags the scraper runs only the roster scan; passing mode
 flags runs just those modes (add `--guild` to also run the roster scan in the
@@ -380,9 +380,33 @@ Shared scaffolding is in `modes/common.py`:
   points, ...) is decided by `Counter.most_common`. `None` reads are dropped
   from the vote, so a single clean frame is enough.
 - **`resolve_entries()`** · maps each voted OCR name to a `member_id` via the
-  same roster matcher (`alias -> exact -> normalized-core -> fuzzy@0.86`).
-  Unmatched names are **dropped**, not created · membership belongs to the
-  roster scan. Unmatched reads surface as `REVIEW_NAMES:` for the bot.
+  same roster matcher (`alias -> exact -> normalized-core -> fuzzy@0.86`, with
+  a merged-server-tag fallback — see below). Unmatched names are **dropped**,
+  not created · membership belongs to the roster scan. Unmatched reads surface
+  as `REVIEW_NAMES:` for the bot.
+
+Each card's `RankRow.texts` collects non-numeric blocks near the row beyond the
+name/rank/points: right-side info (`x > 700`, e.g. Dream Realm's `"6934M"`
+score) as well as a second text line directly under the name (e.g. Guild
+Duel's per-row guild tag, ~56-57px below the name on a 1080x1920 capture) —
+anything at `x > rank_x_max` other than the name's own block. Consumers
+(`dream_realm.py`, `afk_stages.py`, `guild_duel.py`) pattern-match the specific
+text they need out of this list; it is not filtered further by the parser.
+
+### Merged server-tag names
+
+OCR occasionally merges a player's server tag onto their name in one text
+block (`"Kit"` + `"s282"` -> `"Kits282"`). `parse_rank_rows()` does **not**
+try to strip this at parse time — an earlier version did, via a regex
+guessing at a trailing `[Ss]?\d{3,4}` suffix, but that guess is unresolvable
+from the string alone: it silently truncated real names ending in digits or
+"s" (`"Scorpion175"` -> `"Scorpion"`, `"Crysallis"` -> `"Crysalli"`) with no
+way to tell those apart from an actual merged tag. Instead,
+`RosterResolver.resolve()` (`db.py`) tries the raw OCR'd name first against
+the full alias/exact/normalized-core/fuzzy chain, and only falls back to
+stripping a trailing tag-shaped suffix (`_strip_merged_tag()`) if the raw name
+doesn't resolve — so a real roster name always wins over the merged-tag
+guess, and the guess still recovers genuinely tag-merged reads.
 
 ### Why voting (not re-passes)
 
@@ -426,13 +450,29 @@ offsets).
   scan (`DELETE` then re-`INSERT`), not an upsert-by-key like the other
   per-mode tables — table membership itself is the "signed up" signal, so a
   member absent from one scan's rows must not linger as signed-up from a
-  stale previous scan.
+  stale previous scan. Once sign-ups close, tapping the Clashfronts card leads
+  to the battle deployment map ("Round 1", a "Deploy" button) instead of the
+  roster — `_on_deploy_screen()` detects that via its "Deploy" button text
+  (OCR, no template needed) when navigation fails to find "Manage Sign-Ups",
+  presses back, and exits cleanly rather than surfacing `MODE_FAILED`.
+- **guild_duel** · weekly, Monday-anchored (`current_guild_duel_period()`,
+  mirrors `supreme_arena`'s Wednesday anchor but with no scan-window gating —
+  crests accumulate Mon-Fri and any day's read is useful). Unlike every other
+  mode, this Rankings screen has **no in-game guild filter at all** — it's a
+  guild-vs-guild event and both guilds' contributors are listed together with
+  their own guild tag under each name (e.g. `"RKF RiffRaff"`). `guild_duel.py`
+  filters on that tag per row (`_is_our_guild()`, lenient substring/fuzzy@0.75
+  match, tolerant of OCR noise on the tag) *before* name resolution, rather
+  than relying on `resolve_names()`'s fuzzy@0.86 roster match to sort out
+  which guild a row belongs to — a similarly-named member of the other guild
+  could otherwise fuzzy-match onto one of ours and misattribute their crests.
 
 Results are written to per-mode tables (`*_rankings`, `dream_realm_scores`,
 `clashfronts_signups`) keyed by `member_id` (+ `scanned_at`, or `period_start`
-for supreme_arena); the bot reads the latest scan per member for `/member`
-(rankings) or `/clashfronts` (sign-ups). Each mode prints a `<MODE>:`-prefixed
-status line to stdout that the bot parses and posts to Discord.
+for supreme_arena and guild_duel); the bot reads the latest scan per member
+for `/member` (rankings) or `/clashfronts` (sign-ups). Each mode prints a
+`<MODE>:`-prefixed status line to stdout that the bot parses and posts to
+Discord.
 
 ---
 

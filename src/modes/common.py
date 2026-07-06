@@ -166,12 +166,12 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
             if NUM_RE.match(cleaned):
                 numbers.append(int(cleaned))
             elif not name:
-                candidate = re.sub(r"^[\W_]+", "", t)
-                # Strip trailing server tag merged by OCR: "Kits282", "Kit282", "Kit s282"
-                # Only accept S/s as optional prefix — [A-Za-z] was too broad and
-                # ate the last letter of names like UCQ (UCQ282 → UC instead of UCQ).
-                candidate = re.sub(r"\s*[sS]?\d{3,4}$", "", candidate).strip()
-                candidate = re.sub(r"\s*[sS]$", "", candidate).strip()  # trailing lone S (truncated server tag)
+                # A merged server tag ("Kits282") is left untouched here —
+                # RosterResolver.resolve() tries the raw name first and only
+                # falls back to stripping a trailing tag-shaped suffix if the
+                # raw name doesn't resolve, so real names ending in digits/s
+                # ("Scorpion175", "Crysallis") aren't mangled before matching.
+                candidate = re.sub(r"^[\W_]+", "", t).strip()
                 if candidate and candidate.lower() not in skip:
                     name = candidate
                 elif candidate:
@@ -190,9 +190,12 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
             continue
         if cy < list_y_min:  # above the list (podium / header) — never a member row
             continue
-        candidate = re.sub(r"^[\W_]+", "", t)
-        candidate = re.sub(r"\s*[sS]?\d{3,4}$", "", candidate).strip()
-        candidate = re.sub(r"\s*[sS]$", "", candidate).strip()
+        # A merged server tag ("Kits282") is left untouched here —
+        # RosterResolver.resolve() tries the raw name first and only falls
+        # back to stripping a trailing tag-shaped suffix if the raw name
+        # doesn't resolve, so real names ending in digits/s ("Scorpion175",
+        # "Crysallis") aren't mangled before they ever reach the resolver.
+        candidate = re.sub(r"^[\W_]+", "", t).strip()
         # Single-character reads ('市', '金') are OCR noise from UI bleed, never
         # real player names · drop them so they don't reach REVIEW_NAMES.
         if not candidate or len(candidate) <= 1 or candidate.lower() in skip:
@@ -225,9 +228,14 @@ def parse_rank_rows(img, ocr_results: list, card_tol: int = 85,
         if not nearby_pts and rank_val is None and not value_hit:
             continue
         val = max(nearby_pts, key=lambda p: p[0])[2] if nearby_pts else None
-        # Collect x>700 non-numeric text blocks (e.g. "6934M" score in Dream Realm)
+        # Collect non-numeric text blocks near the row: right-side info (e.g.
+        # "6934M" score in Dream Realm, x>700) as well as a second text line
+        # under the name itself (e.g. Guild Duel's per-row guild tag, which
+        # sits in the name's own x-range one line below it, ~56-57px down on
+        # a 1080x1920 capture). Excludes the name's own block by coordinates.
         extra_texts = [t for ecx, ecy, t in blocks
-                       if ecx > 700 and abs(ecy - cy) < card_tol
+                       if ecx > rank_x_max and (ecx, ecy) != (cx, cy)
+                       and abs(ecy - cy) < card_tol
                        and not NUM_RE.match(t.replace(",", "").strip())]
         rows.append(RankRow(rank=rank_val, name=candidate,
                             numbers=[val] if val else [], texts=extra_texts, y=cy))

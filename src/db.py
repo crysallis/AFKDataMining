@@ -150,6 +150,15 @@ def init_db() -> None:
                 PRIMARY KEY (member_id, period_start)
             );
 
+            CREATE TABLE IF NOT EXISTS guild_duel_rankings (
+                member_id    INTEGER NOT NULL REFERENCES members(id),
+                period_start TEXT NOT NULL,
+                rank         INTEGER,
+                crests       INTEGER,
+                scanned_at   TEXT NOT NULL,
+                PRIMARY KEY (member_id, period_start)
+            );
+
             CREATE TABLE IF NOT EXISTS honor_duel_rankings (
                 member_id    INTEGER PRIMARY KEY REFERENCES members(id),
                 rank         INTEGER,
@@ -522,6 +531,16 @@ def _normalized_match(name: str, norm_idx: dict[str, str]) -> str | None:
     return norm_idx.get(core)
 
 
+def _strip_merged_tag(name: str) -> str:
+    """Strip a trailing server-tag shape OCR sometimes merges onto a ranking
+    screen name ("Kit" + "s282" -> "Kits282"). Only an [Ss]?ddd(d) suffix
+    counts — a bare [A-Za-z] prefix was tried and too broad (ate the last
+    letter of names like UCQ: UCQ282 -> UC instead of UCQ)."""
+    stripped = re.sub(r"\s*[sS]?\d{3,4}$", "", name).strip()
+    stripped = re.sub(r"\s*[sS]$", "", stripped).strip()
+    return stripped
+
+
 def _fuzzy_match_known(name: str, known: set[str], threshold: float = 0.88) -> str | None:
     best_score = 0.0
     best_match = None
@@ -552,6 +571,20 @@ class RosterResolver:
         self._learn = learn
 
     def resolve(self, name: str) -> str | None:
+        canonical = self._resolve_once(name)
+        if canonical:
+            return canonical
+        # Ranking-screen OCR sometimes merges a player's server tag onto their
+        # name in one text block ("Kit" + "s282" -> "Kits282"). Try the raw
+        # name first (above) so real names ending in digits/s ("Scorpion175",
+        # "Crysallis") resolve untouched · only fall back to stripping a
+        # trailing merged-tag-shaped suffix if the raw name didn't resolve.
+        stripped = _strip_merged_tag(name)
+        if stripped != name:
+            return self._resolve_once(stripped)
+        return None
+
+    def _resolve_once(self, name: str) -> str | None:
         if name.lower() in self._corrections:
             return self._corrections[name.lower()]
         exact = _roster_exact(name, self._roster)
@@ -827,6 +860,17 @@ def current_supreme_period() -> str:
     return wednesday.isoformat()
 
 
+def current_guild_duel_period() -> str:
+    """Returns the period_start (most recent Monday, ISO date) for 'now' ·
+    always resolves, regardless of weekday. Crests accumulate Mon-Fri; no scan
+    window gating (unlike Supreme Arena) since any day's read is useful.
+    Anchored to Monday (weekday index 0) instead of Wednesday (index 2)."""
+    now = _utcnow()
+    days_since_monday = (now.weekday() + 7 - 0) % 7
+    monday = (now - timedelta(days=days_since_monday)).date()
+    return monday.isoformat()
+
+
 def get_supreme_period() -> str | None:
     """Returns the period_start to scan for, or None to skip the LIVE scan.
 
@@ -862,6 +906,17 @@ def save_supreme_arena(entries: list[dict], force: bool = False) -> int:
             """INSERT OR REPLACE INTO supreme_arena_rankings
                (member_id, period_start, rank, scanned_at) VALUES (?, ?, ?, ?)""",
             [(e["member_id"], period, e.get("rank"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_guild_duel(entries: list[dict]) -> int:
+    period = current_guild_duel_period()
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO guild_duel_rankings
+               (member_id, period_start, rank, crests, scanned_at) VALUES (?, ?, ?, ?, ?)""",
+            [(e["member_id"], period, e.get("rank"), e.get("crests"), scanned_at) for e in entries])
     return len(entries)
 
 

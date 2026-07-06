@@ -55,20 +55,25 @@ Alternatively, trigger a scan from Discord using `/scan` (authorized user only).
 
 ### Game-mode ranking scans
 
-Beyond the roster scrape, the scraper can capture per-member rankings for six game
+Beyond the roster scrape, the scraper can capture per-member rankings for seven game
 modes, plus Clashfronts sign-up/selection tracking. Each is enabled with a flag
 (with no flags, only the roster scan runs):
 
 ```powershell
 .\venv\Scripts\python.exe src\scraper.py --arena --honor-duel
-# flags: --dream-realm --afk-stages --arena --supreme-arena --honor-duel --arcane-lab --clashfronts
+# flags: --dream-realm --afk-stages --arena --supreme-arena --honor-duel --arcane-lab --clashfronts --guild-duel
 ```
 
-The six ranking scans read every ranking card across many frames and resolve
+The ranking scans read every ranking card across many frames and resolve
 the final value by majority vote, so they survive OCR noise and animated rows.
 `--clashfronts` instead scans the "Manage Sign-Ups" roster (not a rankings
-screen) and records who's signed up and who's been selected/approved. Results
-go to per-mode tables in `guild.db` and feed the bot's `/member` (rankings) or
+screen) and records who's signed up and who's been selected/approved; once
+sign-ups close it lands on the deployment map instead, which the scan detects
+(via the "Deploy" button) and skips cleanly. `--guild-duel` scans the Guild
+Duel "Total Crest Rankings" screen, which — unlike every other mode — mixes
+both guilds in the same list with no in-game filter; each row's own guild tag
+is checked instead, and only "RKF RiffRaff" rows are kept. Results go to
+per-mode tables in `guild.db` and feed the bot's `/member` (rankings) or
 `/clashfronts` (sign-ups) commands. See `ARCHITECTURE.md` for the voting and
 rank-reading details.
 
