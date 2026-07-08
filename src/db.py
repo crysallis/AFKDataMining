@@ -31,20 +31,18 @@ def init_db() -> None:
     member-identity tables (the bot's utils/db.js owns its bot-only tables and
     never creates these). The CREATE statements always reflect the CURRENT
     shape: when the schema changes, run the ALTER once against guild.db and
-    fold the column into the CREATE here · no migration trail replayed on load."""
+    fold the column into the CREATE here · no migration trail replayed on load.
+
+    guilds/warbands are bot-owned (Discord role/membership management is a bot
+    concern) · created by utils/db.js, not here. members.warband_id below still
+    references warbands(id) since it's the same physical guild.db file; the
+    scraper only reads that table (_resolve_warband) and never creates it."""
     with _connect() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS snapshots (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 scraped_at   TEXT NOT NULL,
                 member_count INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS warbands (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                name        TEXT NOT NULL UNIQUE,
-                sort_order  INTEGER NOT NULL DEFAULT 0,
-                archived    INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS members (
@@ -181,9 +179,6 @@ def init_db() -> None:
                 scanned_at TEXT NOT NULL
             );
         """)
-        # Seed known warbands (idempotent)
-        for i, name in enumerate(SEED_WARBANDS):
-            conn.execute("INSERT OR IGNORE INTO warbands (name, sort_order) VALUES (?, ?)", (name, i))
         conn.commit()
 
 
@@ -209,7 +204,6 @@ def _la_pair(last_active: str | None, scraped_at: datetime) -> tuple[str | None,
     return last_active, _parse_last_seen(last_active, scraped_at).isoformat()
 
 
-SEED_WARBANDS = ("RKF RiffRaff", "RKF Kings", "Sobaquitos")
 # Hard OCR misreads fuzzy matching can't catch · keys are lowercase → canonical name
 WARBAND_ALIASES = {"dkekinos": "RKF Kings"}
 

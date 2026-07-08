@@ -32,7 +32,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/device.py` | ADB interface (screenshot, tap, swipe, scroll) · leak-free `_shell`, retry/restart logic |
 | `src/ocr.py` | Shared OCR wrapper (RapidOCR PP-OCRv5, v3 fallback) |
 | `src/parser.py` | Extracts structured `Member` data from OCR results · `NAME_X_MIN`, `PURE_POWER_RE`, `TOTAL_RE` live here |
-| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, warbands, name_corrections, member_name_history, dream_realm_bosses, dream_realm_boss_aliases, dream_realm_scores, afk_stage_rankings, arena_rankings, supreme_arena_rankings, honor_duel_rankings, arcane_lab_rankings, clashfronts_signups, guild_duel_rankings) · bot creates only its bot-only tables · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` · `RosterResolver.resolve()` tries the raw OCR'd name first, falling back to `_strip_merged_tag()` only if that fails (see Gotchas) |
+| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, name_corrections, member_name_history, dream_realm_bosses, dream_realm_boss_aliases, dream_realm_scores, afk_stage_rankings, arena_rankings, supreme_arena_rankings, honor_duel_rankings, arcane_lab_rankings, clashfronts_signups, guild_duel_rankings) · `guilds`/`warbands` are bot-owned (see below) · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` · `RosterResolver.resolve()` tries the raw OCR'd name first, falling back to `_strip_merged_tag()` only if that fails (see Gotchas) |
 | `src/capture_template.py` | ADB screencap → crop → save template |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
 | `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name |
@@ -47,8 +47,13 @@ Shared with bot at `C:\vscode\AFKDataMining\guild.db`.
 Warbands are normalized: `warbands` table (canonical) + `warband_id` FK on `members` (current
 warband) and `member_snapshots` (per-scan). `_resolve_warband()` snaps OCR reads to a warband id
 (alias → exact → fuzzy); blank/unread warbands fall back to the member's known current warband.
-`members.warband` text is kept in sync for display. Edit `SEED_WARBANDS`/`WARBAND_ALIASES` in
-`db.py` for new warbands the scraper should recognize (or add via the bot admin panel).
+`members.warband` text is kept in sync for display. Edit `WARBAND_ALIASES` in `db.py` for OCR
+misreads the scraper should recognize.
+
+**`guilds` and `warbands` are owned by the bot** (`DiscordBotAfkJ/utils/db.js`), not the miner —
+Discord role/membership management is a bot concern. The miner only reads `warbands` here
+(`_resolve_warband()`) against the same physical `guild.db` file; it never creates or seeds the
+table. Add new warbands via the bot's admin panel, not by editing `db.py`.
 
 ### Power Value Convention
 - Stored text: `"86329K"` (verbatim game display)
