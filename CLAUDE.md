@@ -268,12 +268,6 @@ completes — not tracked yet, intentionally out of scope.
   own block) — verified safe for the two other consumers of `row.texts`
   (`dream_realm.py`, `afk_stages.py`), since both pattern-match specific text
   shapes rather than taking the first available block.
-- `current_guild_duel_period()` anchors to the most recent Monday (mirrors
-  `current_supreme_period()`'s Wednesday-anchor formula) but applies **no**
-  scan-window gating — Supreme Arena's Mon/Tue-only + once-per-day guard is
-  specific to that mode's result-finality window; Guild Duel crests can be
-  usefully scanned any day Mon-Fri, so `save_guild_duel()` always writes via
-  `INSERT OR REPLACE` against the current period.
 - **Found and fixed a pre-existing name-truncation bug while verifying this
   live**: `parse_rank_rows` used to strip what it guessed was an OCR-merged
   server tag off the end of every name (`"Kits282"` → `"Kit"`), via a regex
@@ -289,6 +283,58 @@ completes — not tracked yet, intentionally out of scope.
   strips to `"Kit"` → resolves) while no longer mangling real names before
   they ever reach the resolver. Verified live: 47/47 names matched on the
   next scan (up from 45/46), zero regressions.
+
+### Weekly Battle Report scan (replaces daily scan)
+
+The scan no longer reads the live daily "Guild Duel Total Crest Rankings"
+screen. It now reads the "Battle Report" screen once a week, which shows the
+previous week's FINALIZED per-member crest totals — confirmed live to stay
+stable and correct for the entire following week (rolls over exactly at
+Monday 00:00 UTC, no lag).
+
+- Nav path: Battle Modes → Guild Duel card → lands on a "Preparation Phase"
+  team-matchup tab by default (no Battle Report button there) → OCR-tap the
+  "Elite Duelers" bottom-nav tab → OCR-tap "Battle Report" (top-right).
+  `navigate_to_guild_duel_battle_report()` (`nav.py`) drives this directly
+  rather than reusing `navigate_to_mode()`, since that helper's generic
+  "tap Rankings" step overshoots past Elite Duelers onto the OLD daily
+  rankings screen instead. The "Battle Report" button's wrapped two-line
+  label OCRs as separate "Battle" / "Report" blocks (confirmed live,
+  ratio 0.63 against the joined string — below the 0.82 match threshold),
+  same class of issue as the "ManageSign" split below — the tap target is
+  the single word "Battle".
+- `get_guild_duel_period()` (`db.py`) gates the scan: computes the period via
+  the pure `guild_duel_period_key(now)` — the Monday of the week Battle
+  Report is currently displaying, which is one week BEHIND the most recent
+  calendar Monday (e.g. on the Monday 00:00 UTC rollover itself, Battle
+  Report has just switched to showing the PRIOR week, not the day's own
+  Monday) — and returns `None` if that period already has rows. The daily
+  `--guild-duel` CLI invocation becomes a fast no-op most days, and a
+  missed/failed Monday run self-heals by retrying on the next day's scrape
+  until it succeeds. `guild_duel_period_key`'s boundary math is covered by
+  a standalone assertion script (`test_guild_duel_period.py`, repo root) —
+  the first implementation had an off-by-one-week bug (returned the current
+  week instead of the prior one) that only the multi-date assertions caught,
+  not a single day's live run.
+- The Battle Report card has a reward-icon banner above the list (numeric
+  values measured at y=761-762 on a 1080x1920 capture) that
+  `list_y_min=850` excludes from being read as row data (first real row
+  measured at y=908) — and no hero/podium section (unlike Dream Realm/Arena).
+- Uses its own `guild_duel_scroll_down()` (`device.py`) instead of the
+  shared `scroll_down()` — the Battle Report popup's visible list area is
+  shorter than the full Rankings screen the default swipe was tuned for.
+- **Known accepted gap**: the viewer's own row is sticky (pinned at a fixed
+  position regardless of scroll position), occluding whatever real member
+  row would otherwise be there in every sampled frame. Confirmed unavoidable
+  even scrolling manually by hand (the row drops back into place the instant
+  the scroll gesture ends) — accepted as an unrecoverable limitation, not
+  engineered around with a completeness check.
+- Migration: the daily-scan data for the transition week (period_start
+  2026-07-06, 83 rows) was deleted and re-seeded from a real Battle Report
+  scan (81 rows; top crest values matched what was visible on screen) rather
+  than left mixed with daily partial reads.
+- `_is_our_guild()` per-row guild-tag filtering (see above) is unchanged and
+  still applies on this screen.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.
