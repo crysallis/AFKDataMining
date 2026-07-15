@@ -854,15 +854,29 @@ def current_supreme_period() -> str:
     return wednesday.isoformat()
 
 
+def guild_duel_period_key(now: datetime) -> str:
+    """Returns the period_start (ISO date) of the week Battle Report is
+    currently showing · pure function, no DB access, so the boundary math can
+    be asserted directly against known dates instead of only observed live on
+    one day. Battle Report always displays the week that just ended, stable
+    for the entire following week (confirmed live: still showed last week's
+    result on a Tuesday with the new week's Prep Phase already running) and
+    rolling over exactly at Monday 00:00 UTC (confirmed, no lag). That means
+    the period is one week BEHIND the most recent Monday, not the most recent
+    Monday itself · e.g. on Mon Jul 20 (rollover day), Battle Report has just
+    switched to showing the week starting Jul 13, not Jul 20."""
+    days_since_monday = (now.weekday() + 7 - 0) % 7
+    most_recent_monday = (now - timedelta(days=days_since_monday)).date()
+    period_start = most_recent_monday - timedelta(days=7)
+    return period_start.isoformat()
+
+
 def current_guild_duel_period() -> str:
     """Returns the period_start (most recent Monday, ISO date) for 'now' ·
     always resolves, regardless of weekday. Crests accumulate Mon-Fri; no scan
     window gating (unlike Supreme Arena) since any day's read is useful.
     Anchored to Monday (weekday index 0) instead of Wednesday (index 2)."""
-    now = _utcnow()
-    days_since_monday = (now.weekday() + 7 - 0) % 7
-    monday = (now - timedelta(days=days_since_monday)).date()
-    return monday.isoformat()
+    return guild_duel_period_key(_utcnow())
 
 
 def get_supreme_period() -> str | None:
