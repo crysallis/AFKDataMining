@@ -871,12 +871,24 @@ def guild_duel_period_key(now: datetime) -> str:
     return period_start.isoformat()
 
 
-def current_guild_duel_period() -> str:
-    """Returns the period_start (most recent Monday, ISO date) for 'now' ·
-    always resolves, regardless of weekday. Crests accumulate Mon-Fri; no scan
-    window gating (unlike Supreme Arena) since any day's read is useful.
-    Anchored to Monday (weekday index 0) instead of Wednesday (index 2)."""
-    return guild_duel_period_key(_utcnow())
+def get_guild_duel_period() -> str | None:
+    """Returns the period_start to scan for, or None to skip.
+
+    Battle Report always shows the just-finished week's totals, stable for
+    the entire following week (confirmed live, no rollover lag at Monday
+    00:00 UTC) · so there's no narrow scan window like Supreme Arena's
+    Mon/Tue gate. The only gate is 'has this period already been saved' ·
+    a missed or failed run safely retries on every later scrape this week
+    until it succeeds, then goes quiet once rows exist."""
+    period = guild_duel_period_key(_utcnow())
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM guild_duel_rankings WHERE period_start = ? LIMIT 1",
+            (period,)
+        ).fetchone()
+    if row:
+        return None
+    return period
 
 
 def get_supreme_period() -> str | None:
@@ -917,8 +929,7 @@ def save_supreme_arena(entries: list[dict], force: bool = False) -> int:
     return len(entries)
 
 
-def save_guild_duel(entries: list[dict]) -> int:
-    period = current_guild_duel_period()
+def save_guild_duel(entries: list[dict], period: str) -> int:
     scanned_at = _utcnow().isoformat()
     with _connect() as conn:
         conn.executemany(

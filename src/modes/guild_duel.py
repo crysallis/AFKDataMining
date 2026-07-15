@@ -1,16 +1,28 @@
-"""Guild Duel ranking scan · rank + crests. This ranking screen mixes both
-guilds in the same Mon-Fri contest (no in-game filter available), so each row
-carries its own guild tag under the member name ("RKF RiffRaff") that must be
-checked per row — rows tagged for the other guild are dropped before name
-resolution, not left for resolve_names() to sort out."""
+"""Guild Duel Battle Report scan · rank + crests, read once a week from the
+previous week's finalized results. This screen mixes both guilds in the same
+Mon-Fri contest (no in-game filter available, same as the old daily Rankings
+screen), so each row carries its own guild tag under the member name ("RKF
+RiffRaff") that must be checked per row -- rows tagged for the other guild
+are dropped before name resolution, not left for resolve_names() to sort
+out. The viewer's own row is sticky (pinned at a fixed position regardless
+of scroll), which occludes whatever real row would be there -- confirmed
+unavoidable even scrolling by hand, so that one member's row is accepted as
+unrecoverable rather than engineered around."""
 from difflib import SequenceMatcher
 
-from db import init_db, current_guild_duel_period, save_guild_duel
-from nav import navigate_to_mode
+from db import init_db, get_guild_duel_period, save_guild_duel
+from device import guild_duel_scroll_down
+from nav import navigate_to_guild_duel_battle_report
 from modes.common import parse_rank_rows, scroll_scan, resolve_entries
 
 GUILD_TAG = "rkf riffraff"
 GUILD_TAG_THRESHOLD = 0.75
+
+# Reward banner (Victory/Tier Rewards icons and their numeric values, e.g.
+# 1200/500/600/250/6) sits above the member list, measured at y=761-762 on a
+# 1080x1920 capture; the first real row starts at y=908 -- excluded so those
+# reward numbers are never read as row data.
+LIST_Y_MIN = 850
 
 
 def _is_our_guild(texts: list[str]) -> bool:
@@ -29,33 +41,20 @@ def _parse(img, ocr_results) -> list[dict]:
     return [
         {"name": row.name, "rank": row.rank,
          "crests": row.numbers[0] if row.numbers else None}
-        for row in parse_rank_rows(img, ocr_results)
+        for row in parse_rank_rows(img, ocr_results, list_y_min=LIST_Y_MIN)
         if _is_our_guild(row.texts)
     ]
 
 
-def _reentry() -> bool:
-    """Second-pass reentry, same as make_reentry_fn() but without the in-game
-    guild-filter tap — there is no such filter on this screen (both guilds are
-    always listed together; _is_our_guild() does the filtering per row)."""
-    from nav import press_back, _wait_until_stable, find_template, _t
-    from device import tap, screenshot
-    press_back()
-    _wait_until_stable()
-    pos = find_template(screenshot(), _t("rankings_btn"), threshold=0.75)
-    if not pos:
-        print("GUILD_DUEL: rankings_btn not found on reentry, skipping pass 2.")
-        return False
-    tap(*pos)
-    _wait_until_stable()
-    return True
-
-
 def scan() -> None:
     init_db()
-    navigate_to_mode("guild_duel")
-    entries = scroll_scan(_parse, "Guild Duel", reentry_fn=_reentry)
+    period = get_guild_duel_period()
+    if period is None:
+        print("GUILD_DUEL: skipping (this week's period already scanned).")
+        return
+
+    navigate_to_guild_duel_battle_report()
+    entries = scroll_scan(_parse, "Guild Duel", scroll_fn=guild_duel_scroll_down)
     rows = resolve_entries(entries, "Guild Duel")
-    period = current_guild_duel_period()
-    saved = save_guild_duel(rows)
+    saved = save_guild_duel(rows, period)
     print(f"GUILD_DUEL: saved {saved} entries for period {period}.")

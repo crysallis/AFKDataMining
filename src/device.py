@@ -174,6 +174,17 @@ def scroll_down() -> None:
     swipe(540, 1400, 540, 778, 2200)
 
 
+def guild_duel_scroll_down() -> None:
+    """Scroll increment for the Guild Duel Battle Report popup card, whose
+    visible list area is shorter than the full Rankings screen scroll_down()
+    was tuned for -- that swipe overshoots this smaller viewport and skips
+    rows. Starting point: half the distance and duration of scroll_down()'s
+    620px/2200ms, for roughly double the stops over the same content. Tune
+    on-device against the real card (measure row pitch, confirm via voted
+    entry counts) before relying on this for a live scan."""
+    swipe(540, 1300, 540, 990, 1100)
+
+
 def screen_changed(prev: np.ndarray, curr: np.ndarray, threshold: float = 1.5) -> bool:
     return _img_diff(prev, curr) >= threshold
 

@@ -395,7 +395,7 @@ def _vote_entries(observations: list[dict], label: str,
 
 
 def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
-                reentry_fn=None, frames_per_stop: int = 2) -> list[dict]:
+                reentry_fn=None, frames_per_stop: int = 2, scroll_fn=None) -> list[dict]:
     """Open-ended scroll pass for ranked lists. All raw observations from every
     frame are accumulated then consolidated via majority vote per rank.
 
@@ -405,7 +405,10 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
     (e.g. the podium flickering the ornate top-1 glyph out of OCR) without a
     second full pass — so the reentry pass is skipped when multi-sampling.
     reentry_fn: re-opens the ranking list for a second full pass; only used when
-    frames_per_stop < 2 (single-frame mode), where per-stop redundancy is absent."""
+    frames_per_stop < 2 (single-frame mode), where per-stop redundancy is absent.
+    scroll_fn: overrides the default device.scroll_down() swipe -- used by
+    screens whose visible list area doesn't match the full Rankings screen
+    the default swipe was tuned for (e.g. Guild Duel's Battle Report popup)."""
     all_observations: list[dict] = []
 
     def _one_pass() -> None:
@@ -435,7 +438,7 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                     break
             else:
                 no_new = 0
-            scroll_down()
+            (scroll_fn or scroll_down)()
             scrolls += 1
             time.sleep(1.2)
             curr_img = screenshot()
