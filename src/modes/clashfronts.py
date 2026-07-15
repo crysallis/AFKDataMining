@@ -8,10 +8,9 @@ numbers appear on this screen at all, so parse_rank_rows doesn't apply --
 row detection here is name-block + template-matched checkmark only."""
 import re
 
-from device import screenshot
-from ocr import block_center, ocr_image
+from ocr import block_center
 from db import init_db, save_clashfronts_signups
-from nav import navigate_to_clashfronts_signups, press_back
+from nav import navigate_to_clashfronts_signups, press_back, ClashfrontsDeployScreen
 from modes.common import (NUM_RE, SKIP_LABELS, scroll_scan, resolve_entries,
                           detect_tiers, tier_for_row, _warband_skip_set)
 
@@ -59,24 +58,14 @@ def _parse(img, ocr_results) -> list[dict]:
     return rows
 
 
-def _on_deploy_screen() -> bool:
-    """Once sign-ups close, the Clashfronts card leads straight to the battle
-    deployment map ('Round 1', a 'Deploy' button) instead of the Manage
-    Sign-Ups roster · nothing to scan there, so detect it via its 'Deploy'
-    button text and exit cleanly rather than treating it as a nav failure."""
-    return any(text.strip().lower() == "deploy" for _, text, _ in ocr_image(screenshot()))
-
-
 def scan() -> None:
     init_db()
     try:
         navigate_to_clashfronts_signups()
-    except RuntimeError:
-        if _on_deploy_screen():
-            press_back()
-            print("CLASHFRONTS: sign-ups closed (deployment screen), skipping.")
-            return
-        raise
+    except ClashfrontsDeployScreen:
+        press_back()
+        print("CLASHFRONTS: sign-ups closed (deployment screen), skipping.")
+        return
     entries = scroll_scan(_parse, "Clashfronts")
     rows = resolve_entries(entries, "Clashfronts")
     saved = save_clashfronts_signups(rows)

@@ -203,15 +203,16 @@ def _tap_to_reach(locate, is_there, label: str, fallback_xy, attempts: int = 5) 
             return False
         before = screen
         tap(*pos)
-        logging.info("%s: tapped %s (attempt %d/%d).", label, pos, attempt, attempts)
         after = _wait_until_stable()
         if is_there(after):
-            logging.info("%s: reached.", label)
+            logging.info("%s: tapped %s, reached (attempt %d/%d).", label, pos, attempt, attempts)
             return True
         if not screen_changed(before, after):
-            logging.warning("%s: screen didn't change — tap may not have registered, retrying.", label)
+            logging.warning("%s: tapped %s, screen didn't change — tap may not have registered "
+                             "(attempt %d/%d), retrying.", label, pos, attempt, attempts)
         else:
-            logging.warning("%s: screen changed but target not reached, retrying.", label)
+            logging.warning("%s: tapped %s, screen changed but target not reached "
+                             "(attempt %d/%d), retrying.", label, pos, attempt, attempts)
     logging.error("%s: not reached after %d attempts.", label, attempts)
     return False
 
@@ -431,6 +432,21 @@ def navigate_to_mode(mode: str, flow_attempts: int = 3) -> None:
     raise RuntimeError(f"Could not reach {mode} ranking after {flow_attempts} attempts.")
 
 
+class ClashfrontsDeployScreen(RuntimeError):
+    """Raised when nav lands on the post-signup deployment map instead of the
+    Manage Sign-Ups roster -- distinct from a plain nav-failure RuntimeError
+    so callers can skip cleanly instead of retrying or surfacing an error."""
+
+
+def _on_clashfronts_deploy_screen() -> bool:
+    """Once sign-ups close, the Clashfronts card leads straight to the battle
+    deployment map ('Round 1', a 'Deploy' button) instead of the Manage
+    Sign-Ups roster -- detect it via its 'Deploy' button text so callers can
+    stop retrying immediately instead of treating it as a nav failure."""
+    from ocr import ocr_image
+    return any(text.strip().lower() == "deploy" for _, text, _ in ocr_image(screenshot()))
+
+
 def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     """Navigate from any screen to the Clashfronts 'Manage Sign-Ups' list.
 
@@ -469,7 +485,9 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
         # scores 0.75 against 'managesign' (below the 0.82 match threshold),
         # so target the actual glued fragment that appears on screen.
         if not _ocr_tap_text(ocr_image, "ManageSign", "clashfronts:manage_btn", attempts=3):
-            logging.warning("'Manage' button not found (flow attempt %d).", attempt)
+            if _on_clashfronts_deploy_screen():
+                raise ClashfrontsDeployScreen("Clashfronts sign-ups closed (deployment screen).")
+            logging.warning("'Manage' button not found (flow attempt %d), re-homing.", attempt)
             continue
         _wait_until_stable()
 
@@ -478,6 +496,66 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
 
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_clashfronts.png"), screenshot())
     raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
+
+
+def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
+    """Navigate from any screen to the Guild Duel 'Battle Report' popup.
+
+    Route: overview -> battle_modes_btn -> OCR 'Guild Duel' card -> lands on
+    the 'Preparation Phase' tab (the default landing tab, a team-matchup
+    screen with no Battle Report button) -> OCR-tap the 'Elite Duelers'
+    bottom-nav tab -> OCR-tap 'Battle Report' (top-right button, found by
+    text since button art may vary by season like the mode cards do).
+    Unlike navigate_to_mode, this never taps 'Rankings' -- that tap belongs
+    to a different bottom-nav path (confirmed live: navigate_to_mode's
+    generic ranking_tmpl/'Rankings' OCR step lands on the OLD daily 'Guild
+    Duel Total Crest Rankings' screen, not Elite Duelers). This function
+    stops at the card tap and drives its own two extra taps, same overall
+    shape as navigate_to_clashfronts_signups."""
+    from ocr import ocr_image
+    card_label = MODE_CARD_LABEL["guild_duel"]
+    logging.info("Navigating to Guild Duel Battle Report.")
+
+    for attempt in range(1, flow_attempts + 1):
+        if not navigate_to_overview():
+            logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
+            continue
+
+        if not _tap_to_reach(
+            lambda s: find_template(s, _t("battle_modes_btn"), threshold=0.75),
+            _is_at_battle_modes, "battle_modes", fallback_xy=None,
+        ):
+            logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
+            continue
+
+        if not _ocr_tap_text(
+            ocr_image, card_label, f"card:{card_label}",
+            scroll_between=True, attempts=5,
+        ):
+            logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
+            continue
+        _wait_until_stable()
+
+        if not _ocr_tap_text(ocr_image, "Elite Duelers", "guild_duel:elite_duelers_tab", attempts=4):
+            logging.warning("'Elite Duelers' tab not found (flow attempt %d), re-homing.", attempt)
+            continue
+        _wait_until_stable()
+
+        # OCR reads the wrapped two-line button ('Battle' / 'Report') as two
+        # separate blocks (confirmed live) -- 'Battle Report' as one string
+        # only scores 0.63 against either fragment alone, well below the 0.82
+        # match threshold, same class of issue as Clashfronts' 'ManageSign'
+        # split. Target the single-word fragment that's actually on screen.
+        if not _ocr_tap_text(ocr_image, "Battle", "guild_duel:battle_report", attempts=4):
+            logging.warning("'Battle Report' button not found (flow attempt %d), re-homing.", attempt)
+            continue
+        _wait_until_stable()
+
+        logging.info("Arrived at Guild Duel Battle Report.")
+        return
+
+    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_guild_duel_battle_report.png"), screenshot())
+    raise RuntimeError(f"Could not reach Guild Duel Battle Report after {flow_attempts} attempts.")
 
 
 def apply_guild_filter() -> bool:

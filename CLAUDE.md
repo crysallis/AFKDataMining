@@ -222,11 +222,17 @@ row. No rank numbers on this screen at all.
 - **Post-signup deployment screen**: once sign-ups close, tapping the
   Clashfronts card leads straight to the battle deployment map ("Round 1", a
   "Deploy" button) instead of "Manage Sign-Ups" — nothing to scan there.
-  `navigate_to_clashfronts_signups()` fails to find the "ManageSign" button on
-  this screen and raises after retrying; `clashfronts.py`'s `scan()` catches
-  that, checks `_on_deploy_screen()` (OCR for the "Deploy" button text, no
-  template needed), presses back, and exits cleanly with a `CLASHFRONTS:`
-  status line instead of surfacing `MODE_FAILED`. Same shape as
+  `navigate_to_clashfronts_signups()` (in `nav.py`) checks for this screen
+  (OCR for "Deploy" button text, no template needed) the moment the
+  "ManageSign" button isn't found, and raises the dedicated
+  `ClashfrontsDeployScreen` exception immediately rather than exhausting all
+  `flow_attempts` retries first — a plain "wrong screen" miss still falls
+  through to the normal re-home-and-retry loop. `clashfronts.py`'s `scan()`
+  catches that specific exception, presses back, and exits cleanly with a
+  `CLASHFRONTS:` status line instead of surfacing `MODE_FAILED`. Originally
+  this check lived only in `clashfronts.py`'s except-block (after retrying 3
+  full nav cycles for nothing) — moved into the retry loop itself so the
+  deploy screen is detected on the first miss. Same shape as
   `supreme_arena.py`'s inactive-screen handling, but text-detected rather than
   template-matched since "Deploy" is plain button text.
 
