@@ -24,4 +24,4 @@ for box, text, conf in results:
 print("\n=== Parsed members ===")
 members = parse_members(results)
 for m in members:
-    print(f"  name={m.name!r}  last_active={m.last_active!r}  power={m.combat_power!r}  activeness={m.activeness}  warband={m.warband!r}")
+    print(f"  name={m.name!r}  last_active={m.last_active!r}  power={m.combat_power!r}  activeness={m.activeness}  warband={m.warband!r}  title={m.title!r}")

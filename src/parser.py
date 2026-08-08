@@ -31,6 +31,44 @@ SKIP_LOWER = {s.lower() for s in SKIP_NAMES}
 # "Warmaster" (left_x=84) produced a phantom duplicate of Caernafon.
 NAME_X_MIN = 130
 
+# Fixed, closed vocabulary of in-game role titles (unlike warbands, which are
+# open-ended and admin-managed via the warbands table) -- every member always
+# has exactly one of these 8, so canonicalization happens here in parser.py,
+# not via a DB lookup like _resolve_warband(). Riff/Raff are edit-distance 1
+# apart, so they require an exact (case-insensitive) match; the other 6 tolerate
+# a fuzzy match for common OCR noise (e.g. "Immortal" misread as "[mmortal").
+TITLES = frozenset({"Riff", "Raff", "Fellowship", "Confidant", "Immortal", "Envoy", "Warmaster", "Sage"})
+_TITLES_LOWER = {t.lower(): t for t in TITLES}
+_AMBIGUOUS_LOWER = {"riff", "raff"}
+
+
+def _canonicalize_title(text: str) -> str | None:
+    """Resolve an OCR'd title-badge block to one of the 8 known titles, or None
+    if no confident match. Strips leading OCR junk (matches _clean_name's
+    approach) before matching. Riff/Raff must match exactly (case-insensitive)
+    -- their edit distance is 1, so fuzzy matching between them is unsafe;
+    the other 6 titles tolerate a fuzzy match (ratio >= 0.8) for OCR noise."""
+    cleaned = re.sub(r"^[\W_]+|[\W_]+$", "", text)
+    if not cleaned:
+        return None
+    low = cleaned.lower()
+
+    if low in _AMBIGUOUS_LOWER:
+        return _TITLES_LOWER[low]
+    if low in _TITLES_LOWER:
+        return _TITLES_LOWER[low]
+
+    best, score = None, 0.0
+    for tl, canonical in _TITLES_LOWER.items():
+        if tl in _AMBIGUOUS_LOWER:
+            continue  # never fuzzy-match into Riff/Raff -- exact match only
+        r = SequenceMatcher(None, low, tl).ratio()
+        if r > score:
+            best, score = canonical, r
+    if best and score >= 0.8:
+        return best
+    return None
+
 
 def _is_skip_label(t: str) -> bool:
     """True for known emblem/UI labels, tolerant of OCR noise around them
@@ -55,6 +93,7 @@ class Member:
     activeness: int
     warband: str = ''
     warband_id: int | None = None
+    title: str = ''
 
 
 def _parse_blocks(ocr_results: list) -> list[tuple[int, int, str]]:
@@ -140,6 +179,22 @@ def parse_members(ocr_results: list) -> list[Member]:
                 last_active = normt
                 break
 
+        # Title badge: a block left of the name column (the space NAME_X_MIN
+        # excludes), 30-50px above the name row. Every member always has
+        # exactly one of the 8 known titles -- a miss here is logged as an
+        # anomaly, never treated as a valid blank (mirrors how last_active
+        # falls back to "Unknown" rather than silently dropping the member).
+        title = ''
+        for x, y, t in _find_near_y(blocks, ny - 40, 15, x_min=0, x_max=NAME_X_MIN):
+            canonical = _canonicalize_title(t)
+            if canonical:
+                title = canonical
+                break
+        if not title:
+            import logging
+            logging.getLogger(__name__).warning(
+                "No title matched for member %r near y=%d -- OCR miss or new title style", name, ny)
+
         # Power / warband / activeness row ~95px below the name row
         power_row = _find_near_y(blocks, ny + 95, 50)
         combat_power = ""
@@ -176,6 +231,7 @@ def parse_members(ocr_results: list) -> list[Member]:
             combat_power=combat_power,
             activeness=activeness,
             warband=warband,
+            title=title,
         ))
 
     return members
