@@ -56,7 +56,8 @@ def init_db() -> None:
                 pending         INTEGER NOT NULL DEFAULT 0,
                 warband_id      INTEGER REFERENCES warbands(id),
                 last_scanned_at TEXT,
-                ingame_id       INTEGER
+                ingame_id       INTEGER,
+                title           TEXT
             );
 
             CREATE TABLE IF NOT EXISTS member_name_history (
@@ -78,7 +79,8 @@ def init_db() -> None:
                 combat_power_value  REAL,
                 activeness          INTEGER NOT NULL,
                 warband             TEXT NOT NULL DEFAULT '',
-                warband_id          INTEGER REFERENCES warbands(id)
+                warband_id          INTEGER REFERENCES warbands(id),
+                title               TEXT NOT NULL DEFAULT ''
             );
 
             CREATE INDEX IF NOT EXISTS idx_ms_snapshot ON member_snapshots(snapshot_id);
@@ -303,7 +305,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         """UPDATE member_snapshots
                            SET name = ?, last_active = ?, last_seen_approx = ?,
                                combat_power = ?, combat_power_value = ?, activeness = ?,
-                               warband = ?, warband_id = ?
+                               warband = ?, warband_id = ?, title = ?
                            WHERE snapshot_id = ? AND member_id = ?""",
                         (
                             m.name,
@@ -313,6 +315,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             m.activeness,
                             m.warband,
                             m.warband_id,
+                            m.title,
                             snapshot_id,
                             member_id,
                         ),
@@ -321,8 +324,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                     conn.execute(
                         """INSERT INTO member_snapshots
                            (snapshot_id, member_id, name, last_active, last_seen_approx,
-                            combat_power, combat_power_value, activeness, warband, warband_id)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            combat_power, combat_power_value, activeness, warband, warband_id, title)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             snapshot_id,
                             member_id,
@@ -333,6 +336,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             m.activeness,
                             m.warband,
                             m.warband_id,
+                            m.title,
                         ),
                     )
         else:
@@ -344,8 +348,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             conn.executemany(
                 """INSERT INTO member_snapshots
                    (snapshot_id, member_id, name, last_active, last_seen_approx,
-                    combat_power, combat_power_value, activeness, warband, warband_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    combat_power, combat_power_value, activeness, warband, warband_id, title)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         snapshot_id,
@@ -357,6 +361,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         m.activeness,
                         m.warband,
                         m.warband_id,
+                        m.title,
                     )
                     for m, member_id in zip(members, member_ids)
                 ],
@@ -396,6 +401,30 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                WHERE snapshot_id = ?
                  AND (warband_id IS NULL OR warband = '')
                  AND (SELECT warband_id FROM members WHERE members.id = member_snapshots.member_id) IS NOT NULL""",
+            (snapshot_id,),
+        )
+
+        # Sync each member's current title from this scan — only when read
+        # (non-blank), so an unreadable title never wipes a known one.
+        # Mirrors the warband_id sync above exactly; title has no separate
+        # _id FK since it's a fixed 8-word vocabulary, not an admin-managed table.
+        conn.execute(
+            """UPDATE members SET title = (
+                   SELECT ms.title FROM member_snapshots ms
+                   WHERE ms.member_id = members.id AND ms.snapshot_id = ? AND ms.title != '')
+               WHERE id IN (
+                   SELECT member_id FROM member_snapshots
+                   WHERE snapshot_id = ? AND title != '')""",
+            (snapshot_id, snapshot_id),
+        )
+        # Blank fallback — fill this scan's unread titles from the member's
+        # known current title so any future title-based view stays continuous.
+        conn.execute(
+            """UPDATE member_snapshots
+               SET title = (SELECT title FROM members WHERE members.id = member_snapshots.member_id)
+               WHERE snapshot_id = ?
+                 AND title = ''
+                 AND (SELECT title FROM members WHERE members.id = member_snapshots.member_id) IS NOT NULL""",
             (snapshot_id,),
         )
 
