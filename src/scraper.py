@@ -75,6 +75,7 @@ def _guild_parse(img, ocr_results) -> list[dict]:
             "combat_power": m.combat_power or None,
             "activeness": m.activeness or None,
             "warband": m.warband or None,
+            "title": m.title or None,
         })
     return out
 
@@ -87,6 +88,7 @@ def _entry_to_member(e: dict) -> Member:
         combat_power=e.get("combat_power") or "",
         activeness=e.get("activeness") or 0,
         warband=e.get("warband") or "",
+        title=e.get("title") or "",
     )
 
 
