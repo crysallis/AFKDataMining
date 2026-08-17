@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from device import screenshot, tap, back, screen_changed
+from device import screenshot, tap, back, screen_changed, mark_progress
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -215,6 +215,7 @@ def _tap_to_reach(locate, is_there, label: str, fallback_xy, attempts: int = 5) 
         after = _wait_until_stable()
         if is_there(after):
             logging.info("%s: tapped %s, reached (attempt %d/%d).", label, pos, attempt, attempts)
+            mark_progress()
             return True
         if not screen_changed(before, after):
             logging.warning("%s: tapped %s, screen didn't change — tap may not have registered "
@@ -223,6 +224,36 @@ def _tap_to_reach(locate, is_there, label: str, fallback_xy, attempts: int = 5) 
             logging.warning("%s: tapped %s, screen changed but target not reached "
                              "(attempt %d/%d), retrying.", label, pos, attempt, attempts)
     logging.error("%s: not reached after %d attempts.", label, attempts)
+    return False
+
+
+def wait_for_boot(max_attempts: int = 8) -> bool:
+    """Tap through the game's cold-boot sequence (splash -> 'Tap to begin your
+    journey' title screen, and any popup/announcement that may follow) until
+    the overview map is reached. Needed after device.restart_game(): a fresh
+    launch does not land on a scannable screen, it lands one tap earlier, and
+    nothing else in this module knows how to get past that.
+
+    A blind center-screen tap (safely clear of the title screen's right-edge
+    Support/Repair/Account/Network/Notice column) advances the title screen;
+    _dismiss_popup handles a known blocking popup first, same as elsewhere.
+    Looped rather than a single tap since a login-reward or announcement
+    popup chain after boot isn't guaranteed absent on every day/session."""
+    for attempt in range(1, max_attempts + 1):
+        screen = _wait_until_stable(timeout=6.0)
+        if _is_at_overview(screen):
+            logging.info("wait_for_boot: reached overview after %d tap(s).", attempt - 1)
+            mark_progress()
+            return True
+        if _dismiss_popup(screen):
+            continue
+        tap(540, 960)
+        logging.debug("wait_for_boot: tapped center (attempt %d/%d).", attempt, max_attempts)
+    final = _wait_until_stable(timeout=6.0)
+    if _is_at_overview(final):
+        mark_progress()
+        return True
+    logging.error("wait_for_boot: overview not reached after %d attempts.", max_attempts)
     return False
 
 
@@ -238,17 +269,21 @@ def navigate_home(max_attempts: int = 25) -> str | None:
         screen = screenshot()
         if _is_at_guild_members(screen):
             logging.debug("Found guild_members after %d back-press(es).", attempt)
+            mark_progress()
             return "guild_members"
         if _is_at_guild_home(screen):
             logging.debug("Found guild_home after %d back-press(es).", attempt)
+            mark_progress()
             return "guild_home"
         if _is_at_overview(screen):
             logging.debug("Found overview (battle_modes_btn) after %d back-press(es).", attempt)
+            mark_progress()
             return "overview"
         if _find_exit_popup(screen):
             press_back()  # one more Back clears the "Exit game?" dialog → overview
             logging.info("Reached root via Exit dialog after %d back-press(es); cleared with Back → overview.", attempt)
             _wait_until_stable(timeout=2.0)
+            mark_progress()
             return "overview"
         if not _tap_ui_back(screen):
             press_back()

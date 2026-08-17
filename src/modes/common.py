@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
-from device import screenshot, scroll_down, screen_changed
+from device import screenshot, scroll_down, screen_changed, mark_progress
 from nav import TEMPLATES_DIR, find_template_all
 from ocr import ocr_image, block_center, engine, get_engine_v5
 from db import resolve_names, names_for_ids, RosterResolver, identity_key
@@ -432,6 +432,8 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                         new += 1
             logging.info("%s: stop · %d frame(s), %d new keys, %d obs total.",
                          label, max(1, frames_per_stop), new, len(all_observations))
+            if new:
+                mark_progress()
             if new == 0:
                 no_new += 1
                 if no_new >= 5:

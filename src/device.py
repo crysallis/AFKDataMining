@@ -13,6 +13,7 @@ _client: adbutils.AdbClient | None = None
 _device: adbutils.AdbDevice | None = None
 
 _last_activity = time.monotonic()  # heartbeat: updated on every successful ADB call
+_last_progress = time.monotonic()  # heartbeat: updated only on confirmed game-state progress
 
 
 def seconds_since_activity() -> float:
@@ -24,6 +25,23 @@ def mark_activity() -> None:
     """Reset the activity heartbeat (call once at scan start)."""
     global _last_activity
     _last_activity = time.monotonic()
+
+
+def seconds_since_progress() -> float:
+    """Seconds since the last confirmed game-state advance (a recognized nav
+    landmark reached, a scroll that changed the screen, etc.) — distinct from
+    seconds_since_activity(), which only proves ADB itself is responsive.
+    A screen can be stuck (e.g. Back not producing an expected transition)
+    while every ADB call still succeeds, keeping the activity heartbeat fresh
+    with no signal that anything is actually wrong."""
+    return time.monotonic() - _last_progress
+
+
+def mark_progress() -> None:
+    """Reset the game-progress heartbeat. Call on confirmed forward movement
+    (a nav landmark reached), not on every successful ADB call."""
+    global _last_progress
+    _last_progress = time.monotonic()
 
 
 def _get_device() -> adbutils.AdbDevice:
@@ -158,6 +176,38 @@ def tap(x: int, y: int) -> None:
 def back() -> None:
     """Android Back (keyevent 4), routed through the retrying ADB layer."""
     _shell("input keyevent 4", timeout=5.0)
+
+
+GAME_PACKAGE = "com.farlightgames.igame.gp"
+_GAME_LAUNCH_ACTIVITY = f"{GAME_PACKAGE}/com.farlightgames.igame.SplashActivity"
+
+
+def is_game_running() -> bool:
+    """True if AFK Journey is the foreground app (mCurrentFocus), confirmed
+    live via `dumpsys window` — the same check driving the game-progress
+    watchdog's restart decision."""
+    out = _shell("dumpsys window | grep mCurrentFocus", timeout=10.0)
+    return GAME_PACKAGE in out
+
+
+def stop_game() -> None:
+    """Force-stop AFK Journey (kills the process, not just backs out of it)."""
+    _shell(f"am force-stop {GAME_PACKAGE}", timeout=10.0)
+
+
+def start_game() -> None:
+    """Launch AFK Journey via its splash activity."""
+    _shell(f"am start -n {_GAME_LAUNCH_ACTIVITY}", timeout=10.0)
+
+
+def restart_game() -> None:
+    """Force-stop then relaunch AFK Journey — a true process restart, unlike
+    navigate_home's Back-based recovery which only ever tries to escape the
+    current screen and has no answer for a hung client that ignores Back
+    entirely."""
+    stop_game()
+    time.sleep(2.0)
+    start_game()
 
 
 def swipe(x1: int, y1: int, x2: int, y2: int, duration_ms: int = 500) -> None:

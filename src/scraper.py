@@ -7,13 +7,15 @@ import sys
 import threading
 from pathlib import Path
 from device import (screenshot, scroll_to_top,
-                    ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process)
-from nav import navigate_to_guild_members
+                    ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process,
+                    seconds_since_progress, mark_progress, restart_game)
+from nav import navigate_to_guild_members, wait_for_boot
 from parser import parse_members, Member
 from db import init_db, save_snapshot, validate_names
 from capture_ids import capture_ingame_ids
 
 STALL_SECONDS = 120  # abort if no successful ADB call for this long (true hang, not slow)
+NO_PROGRESS_SECONDS = 300  # restart the game if no confirmed nav/scroll progress for this long
 
 for _std in (sys.__stdout__, sys.__stderr__):
     try:
@@ -108,10 +110,45 @@ def _start_stall_watchdog(done: threading.Event) -> None:
     logging.info("Watchdog active: aborts if no ADB progress for %ds.", STALL_SECONDS)
 
 
+def _start_game_progress_watchdog(done: threading.Event) -> None:
+    """Restart the game if no confirmed nav/scroll progress happens for
+    NO_PROGRESS_SECONDS, then hard-exit.
+
+    Distinct from the ADB-stall watchdog above: ADB can keep responding
+    (screenshots succeed, taps succeed) while the GAME is genuinely stuck —
+    e.g. a client-side hang where Back stops producing an expected screen
+    transition. That failure mode leaves the ADB heartbeat fresh forever,
+    so it needs its own, coarser signal (device.mark_progress(), called only
+    on a confirmed nav landmark or new scan rows) and a different recovery:
+    force-stop + relaunch the game process, not just kill adb.
+
+    Hard-exits after restarting rather than trying to resume the scan
+    in-process — this script is invoked fresh per /scan by the bot, so the
+    simplest safe recovery is: get the game back to a known-good state and
+    let the next invocation start clean."""
+    def loop():
+        while not done.wait(10):
+            if seconds_since_progress() > NO_PROGRESS_SECONDS:
+                logging.error("Watchdog: no game progress for %ds - restarting game.", NO_PROGRESS_SECONDS)
+                try:
+                    restart_game()
+                    # A fresh launch lands on the title screen, not a scannable
+                    # screen — tap through to the overview so the NEXT /scan
+                    # invocation starts clean instead of stuck at "Tap to begin".
+                    wait_for_boot()
+                except Exception:
+                    logging.exception("Watchdog: restart_game()/wait_for_boot() failed.")
+                os._exit(1)
+    threading.Thread(target=loop, daemon=True).start()
+    logging.info("Watchdog active: restarts game if no nav/scroll progress for %ds.", NO_PROGRESS_SECONDS)
+
+
 def scrape_guild() -> tuple[list[Member], int]:
     mark_activity()
+    mark_progress()
     _done = threading.Event()
     _start_stall_watchdog(_done)
+    _start_game_progress_watchdog(_done)
 
     try:
         init_db()
@@ -146,11 +183,13 @@ MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "a
 
 def run_modes(enabled: list[str]) -> None:
     """Run each enabled game-mode ranking scan after the guild scan, with its
-    own stall watchdog. One mode failing never blocks the rest · failures are
-    printed as MODE_FAILED lines the bot can surface."""
+    own stall + game-progress watchdogs. One mode failing never blocks the
+    rest · failures are printed as MODE_FAILED lines the bot can surface."""
     mark_activity()
+    mark_progress()
     done = threading.Event()
     _start_stall_watchdog(done)
+    _start_game_progress_watchdog(done)
     try:
         for mode in enabled:
             print(f"\nMode scan: {mode}")
