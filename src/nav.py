@@ -159,6 +159,15 @@ def _is_at_guild_members(screen: np.ndarray) -> bool:
     return find_template(screen, _t("guild_members_indicator"), threshold=0.80) is not None
 
 
+def _is_at_overview(screen: np.ndarray) -> bool:
+    """Overview map: look for the bottom-nav Battle Modes icon. Confirmed live
+    (2026-08-17) to stay matchable through event re-skins and camera panning.
+    A direct check, unlike the Exit dialog round-trip which depends on Back
+    actually producing that dialog — observed to silently stop working during
+    a transient game-client hang, with no fallback until this was added."""
+    return find_template(screen, _t("battle_modes_btn"), threshold=0.75) is not None
+
+
 def _tap_ui_back(screen: np.ndarray) -> bool:
     """Tap an on-screen back button if one is visible. Returns True if tapped."""
     for name in ("back_dark", "back_light"):
@@ -233,6 +242,9 @@ def navigate_home(max_attempts: int = 25) -> str | None:
         if _is_at_guild_home(screen):
             logging.debug("Found guild_home after %d back-press(es).", attempt)
             return "guild_home"
+        if _is_at_overview(screen):
+            logging.debug("Found overview (battle_modes_btn) after %d back-press(es).", attempt)
+            return "overview"
         if _find_exit_popup(screen):
             press_back()  # one more Back clears the "Exit game?" dialog → overview
             logging.info("Reached root via Exit dialog after %d back-press(es); cleared with Back → overview.", attempt)
