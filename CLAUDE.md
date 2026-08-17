@@ -134,11 +134,46 @@ silently mix current-phase reads into the backfilled phase's data.
 - `device.py` `_shell` is leak-free: synchronous, context-managed connections;
   retry 2 → restart adb server (server_kill, psutil kill fallback) → 2 more.
 - A no-progress watchdog in `scraper.py` aborts if no successful ADB call for
-  `STALL_SECONDS` (120) — kills adb and exits rather than hanging.
+  `STALL_SECONDS` (120) — kills adb and exits rather than hanging. This only
+  catches a wedged ADB *transport* — see the game-progress watchdog below for
+  the separate case where ADB stays responsive but the game itself is stuck.
 - **AdGuard must exclude `C:\platform-tools\adb.exe`** — its loopback filtering
   throttles the multi-MB screencap transfers and was the root cause of scans
   degrading from 2-3 min to 20+ min. Do NOT exclude `HD-Player.exe` (unblocks
   BlueStacks ads).
+
+## Game-progress watchdog
+A second, independent heartbeat from the ADB one above: ADB can keep
+responding (screenshots and taps all succeed) while the game itself is
+genuinely stuck — e.g. a client-side hang where Back stops producing an
+expected screen transition. That's exactly what caused a real incident
+(2026-08-17): `navigate_home` had no direct way to recognize the overview map
+(only three landmarks: guild_members, guild_home, the Exit-game popup after
+Back), so when Back stopped producing that popup, it looped through
+`max_attempts` and got endlessly re-tried by the outer navigation loops —
+with the ADB-stall watchdog never tripping, since every ADB call kept
+succeeding.
+
+- `device.py` `mark_progress()`/`seconds_since_progress()`: a second
+  heartbeat, updated only on confirmed game-state advances (a nav landmark
+  reached, a scroll finding new rows) — never on a bare successful ADB call.
+- `nav.py` `_is_at_overview()` — a direct `battle_modes_btn` check, added as
+  a fourth `navigate_home` landmark alongside the three above, so reaching
+  the overview no longer depends solely on the Back→popup round-trip.
+- `scraper.py` `_start_game_progress_watchdog` — restarts the game if no
+  confirmed progress for `NO_PROGRESS_SECONDS` (300): `device.restart_game()`
+  (`am force-stop` + relaunch via package `com.farlightgames.igame.gp`), then
+  `nav.wait_for_boot()` — a fresh launch lands on the "Tap to begin your
+  journey" title screen, not a scannable state, so this taps through it (and
+  any popup/announcement chain after) until `_is_at_overview` confirms
+  arrival. Then hard-exits, same shape as the ADB-stall watchdog (this script
+  runs fresh per `/scan`) — leaves the game in a real scannable state for the
+  *next* invocation rather than stuck at the title screen.
+- Modeled on AdbAutoPlayer's (`C:\vscode\AdbAutoPlayer`, a sibling repo kept
+  around as a reference, not a dependency) separate activity-timeout watchdog
+  + `restart_game` pattern — see its `game/_lifecycle_mixin.py` and
+  `util/execute.py`'s watchdog thread for the original design this was
+  adapted from.
 
 ## Dead Ends · Do Not Pursue
 
