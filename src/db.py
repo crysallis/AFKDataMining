@@ -437,10 +437,13 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
 def members_needing_ingame_id() -> list[tuple[int, str]]:
     """(id, ingame_name) for members read in the latest scan that have no stored
     in-game User ID yet. active=1 is latest-scan-only, so this is exactly the
-    on-screen roster · the ID-capture pass only taps members it can reach."""
+    on-screen roster · the ID-capture pass only taps members it can reach.
+    Treats NULL or empty-string as missing -- see members_missing_ingame_id()
+    for why (a manually-cleared field lands as '', not NULL)."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, ingame_name FROM members WHERE active = 1 AND ingame_id IS NULL"
+            "SELECT id, ingame_name FROM members "
+            "WHERE active = 1 AND (ingame_id IS NULL OR ingame_id = '')"
         ).fetchall()
     return [(r["id"], r["ingame_name"]) for r in rows]
 
@@ -448,6 +451,35 @@ def members_needing_ingame_id() -> list[tuple[int, str]]:
 def set_ingame_id(member_id: int, ingame_id: int) -> None:
     with _connect() as conn:
         conn.execute("UPDATE members SET ingame_id = ? WHERE id = ?", (ingame_id, member_id))
+
+
+def member_by_ingame_id(ingame_id: int) -> int | None:
+    """Reverse lookup for the ID-assisted resolution fallback: once a member's
+    in-game User ID is on file, it never changes, so it out-ranks a fuzzy name
+    match that OCR garbled this round."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM members WHERE ingame_id = ?", (ingame_id,)
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def members_missing_ingame_id(member_ids: list[int]) -> set[int]:
+    """Subset of member_ids that have no stored in-game User ID yet -- used by
+    ranking-mode scans to opportunistically backfill IDs for rows that already
+    resolved by name, while the row is still on screen for a follow-up tap.
+    Treats NULL or empty-string as missing (a stray '' from a manual DB edit
+    would otherwise be silently invisible to IS NULL forever)."""
+    if not member_ids:
+        return set()
+    with _connect() as conn:
+        placeholders = ",".join("?" * len(member_ids))
+        rows = conn.execute(
+            f"SELECT id FROM members WHERE id IN ({placeholders}) "
+            "AND (ingame_id IS NULL OR ingame_id = '')",
+            member_ids,
+        ).fetchall()
+    return {r["id"] for r in rows}
 
 
 # --- Name correction helpers ---
@@ -734,14 +766,24 @@ def resolve_names(names: list[str]) -> tuple[dict[str, int], list[str]]:
     surface them via REVIEW_NAMES."""
     resolver = RosterResolver(learn=True)
     with _connect() as conn:
+        # pending=1 excluded: an unapproved/unreviewed row's exact name is itself
+        # an unverified OCR read (possibly garbage, e.g. a single stray fragment
+        # like "to") -- treating it as an authoritative exact-match target let a
+        # bogus pending row silently "match" a later scan's equally-garbled read
+        # of a totally different, real member's card, confirmed live 2026-08-24
+        # (make_id_fallback_hook then wrote a real captured ingame_id onto that
+        # bogus row, actively worsening what should have stayed a harmless,
+        # reviewable duplicate). A real member missed by the latest guild scan
+        # (pending=0, just not in _get_active_roster()) still matches here.
         id_by_name = {r["ingame_name"].lower(): r["id"]
-                      for r in conn.execute("SELECT id, ingame_name FROM members").fetchall()}
+                      for r in conn.execute(
+                          "SELECT id, ingame_name FROM members WHERE pending = 0").fetchall()}
     resolved: dict[str, int] = {}
     unmatched: list[str] = []
     for raw in names:
         canonical = resolver.resolve(raw)
         if canonical is None and raw.lower() in id_by_name:
-            canonical = raw  # known member outside the latest snapshot (e.g. pending)
+            canonical = raw  # known member outside the latest snapshot
         if canonical and canonical.lower() in id_by_name:
             resolved[raw] = id_by_name[canonical.lower()]
         else:
@@ -900,7 +942,7 @@ def guild_duel_period_key(now: datetime) -> str:
     return period_start.isoformat()
 
 
-def get_guild_duel_period() -> str | None:
+def get_guild_duel_period(force: bool = False) -> str | None:
     """Returns the period_start to scan for, or None to skip.
 
     Battle Report always shows the just-finished week's totals, stable for
@@ -908,8 +950,13 @@ def get_guild_duel_period() -> str | None:
     00:00 UTC) · so there's no narrow scan window like Supreme Arena's
     Mon/Tue gate. The only gate is 'has this period already been saved' ·
     a missed or failed run safely retries on every later scrape this week
-    until it succeeds, then goes quiet once rows exist."""
+    until it succeeds, then goes quiet once rows exist. force=True bypasses
+    that gate (manual re-scan) · save_guild_duel is INSERT OR REPLACE keyed
+    on (member_id, period_start), so re-saving the same period overwrites
+    cleanly instead of duplicating."""
     period = guild_duel_period_key(_utcnow())
+    if force:
+        return period
     with _connect() as conn:
         row = conn.execute(
             "SELECT 1 FROM guild_duel_rankings WHERE period_start = ? LIMIT 1",

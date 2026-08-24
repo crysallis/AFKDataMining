@@ -1,7 +1,7 @@
 import re
 import time
 
-from device import screenshot, scroll_down, scroll_to_top, screen_changed, tap, back
+from device import screenshot, scroll_down, scroll_to_top, screen_changed, tap, back, mark_progress
 from parser import parse_member_anchors
 from db import members_needing_ingame_id, set_ingame_id, make_roster_resolver
 from ocr import ocr_image as _ocr
@@ -78,6 +78,7 @@ def capture_ingame_ids(max_scrolls: int = 150) -> int:
             set_ingame_id(member_id, user_id)
             del targets[canonical]
             captured += 1
+            mark_progress()
             print(f"  {canonical}: User ID {user_id} stored.")
 
         scroll_down()
@@ -89,6 +90,7 @@ def capture_ingame_ids(max_scrolls: int = 150) -> int:
                 break
         else:
             no_change = 0
+            mark_progress()
 
     if targets:
         print(f"ID capture: {len(targets)} not found this pass: {', '.join(targets)}")

@@ -9,10 +9,25 @@ from difflib import SequenceMatcher
 
 import cv2
 import numpy as np
-from device import screenshot, scroll_down, screen_changed, mark_progress
+from device import screenshot, scroll_down, screen_changed, mark_progress, tap, back
 from nav import TEMPLATES_DIR, find_template_all
 from ocr import ocr_image, block_center, engine, get_engine_v5
-from db import resolve_names, names_for_ids, RosterResolver, identity_key
+from db import (resolve_names, names_for_ids, RosterResolver, identity_key,
+                member_by_ingame_id, members_missing_ingame_id, set_ingame_id,
+                save_correction)
+
+# "User ID: 18939236" in the profile popup. \D* skips the label/colon so the
+# captured digits are the ID, not the "Server: S282" number elsewhere on screen.
+# Shared with capture_ids.py's guild-list ID capture pass.
+USER_ID_RE = re.compile(r"User\s*ID\D*(\d+)", re.IGNORECASE)
+
+
+def read_user_id(img) -> int | None:
+    for _, text, _ in ocr_image(img):
+        m = USER_ID_RE.search(text)
+        if m:
+            return int(m.group(1))
+    return None
 
 # Ranked lists have no known total (1 to all 90 members may place), so the
 # scroll loop ends only on two consecutive unchanged frames.
@@ -395,7 +410,9 @@ def _vote_entries(observations: list[dict], label: str,
 
 
 def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
-                reentry_fn=None, frames_per_stop: int = 2, scroll_fn=None) -> list[dict]:
+                reentry_fn=None, frames_per_stop: int = 2, scroll_fn=None,
+                require_new: bool = True, no_change_limit: int = 2,
+                on_stop=None) -> list[dict]:
     """Open-ended scroll pass for ranked lists. All raw observations from every
     frame are accumulated then consolidated via majority vote per rank.
 
@@ -408,7 +425,21 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
     frames_per_stop < 2 (single-frame mode), where per-stop redundancy is absent.
     scroll_fn: overrides the default device.scroll_down() swipe -- used by
     screens whose visible list area doesn't match the full Rankings screen
-    the default swipe was tuned for (e.g. Guild Duel's Battle Report popup)."""
+    the default swipe was tuned for (e.g. Guild Duel's Battle Report popup).
+    require_new: when False, disables the no-new-keys early stop -- for modes
+    whose parse_fn drops rows post-OCR (e.g. Guild Duel filtering out the other
+    guild), a stop with zero *kept* rows doesn't mean the list ended, so only
+    screen_changed (real scroll progress) is trusted to end the scan.
+    no_change_limit: consecutive unchanged-screen stops before ending the scan.
+    on_stop(stop_img, frame_entries): optional hook called once per scroll stop,
+    right after that stop's frames_per_stop reads are collected and BEFORE
+    scrolling to the next stop -- the row is still on screen. Used by the ID
+    fallback (see resolve_id_fallback_hook) to tap a row for its permanent
+    in-game User ID while it's reachable, without a second pass: reusing the
+    scroll that's already happening avoids needing a separate re-navigation
+    (which broke Arcane Lab's list by over-scrolling to relocate a row after
+    the fact -- see project memory). Every existing caller that doesn't pass
+    this is unaffected."""
     all_observations: list[dict] = []
 
     def _one_pass() -> None:
@@ -419,12 +450,14 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
         while scrolls < max_scrolls:
             new = 0
             last_img = None
+            stop_entries: list[dict] = []
             for f in range(max(1, frames_per_stop)):
                 if f:
                     time.sleep(0.4)
                 last_img = screenshot()
                 frame_entries = parse_fn(last_img, ocr_image(last_img))
                 all_observations.extend(frame_entries)
+                stop_entries.extend(frame_entries)
                 for e in frame_entries:
                     k = e.get('rank') if e.get('rank') is not None else e.get('name', '').lower()
                     if k and k not in seen_keys:
@@ -434,22 +467,26 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                          label, max(1, frames_per_stop), new, len(all_observations))
             if new:
                 mark_progress()
-            if new == 0:
-                no_new += 1
-                if no_new >= 5:
-                    break
-            else:
-                no_new = 0
+            if on_stop is not None and stop_entries:
+                on_stop(last_img, stop_entries)
+            if require_new:
+                if new == 0:
+                    no_new += 1
+                    if no_new >= 5:
+                        break
+                else:
+                    no_new = 0
             (scroll_fn or scroll_down)()
             scrolls += 1
             time.sleep(1.2)
             curr_img = screenshot()
             if not screen_changed(last_img, curr_img):
                 no_change += 1
-                if no_change >= 2:
+                if no_change >= no_change_limit:
                     break
             else:
                 no_change = 0
+                mark_progress()
         if scrolls >= max_scrolls:
             logging.warning("%s: hit scroll limit (%d).", label, max_scrolls)
 
@@ -508,3 +545,112 @@ def resolve_entries(entries: list[dict], label: str) -> list[dict]:
     logging.info("%s: matched %d/%d entries: %s", label, len(rows), len(entries),
                  ", ".join(_fmt(r) for r in matched))
     return rows
+
+
+RANK_CARD_AVATAR_X = 215          # avatar tap -- measured live against Arcane Lab's
+RANK_CARD_AVATAR_Y_OFFSET = 12    # Sandokai row (2026-08-24): name-block anchor at
+                                   # (414,783), avatar portrait center at ~(215,795).
+                                   # Original placeholder (120, 55) was confirmed
+                                   # wrong live ("way too high") -- cards share the
+                                   # same basic size across ranking modes, so this
+                                   # single measured constant should cover all of
+                                   # them, but still worth confirming on another mode.
+
+
+def make_id_fallback_hook(label: str, avatar_x: int = RANK_CARD_AVATAR_X,
+                          avatar_y_offset: int = RANK_CARD_AVATAR_Y_OFFSET):
+    """Builds an on_stop hook (pass to scroll_scan) that taps a row for its
+    permanent in-game User ID while it's still on screen -- once per row, right
+    after that stop's frames_per_stop reads settle a name for it, before
+    scrolling on. Two cases trigger a tap: the row's name doesn't resolve to
+    any known member, or it does but that member has no ingame_id on file yet
+    (opportunistic backfill).
+
+    avatar_x/avatar_y_offset default to the ranking-card constants (measured
+    live against Arcane Lab) -- pass capture_ids.py's guild-list AVATAR_X/
+    AVATAR_Y_OFFSET (120/55) when wiring this into the guild scan, since that
+    card layout is different and already tuned/proven in production there.
+
+    On the guild scan specifically, a genuinely brand-new (never-seen) member
+    will ALSO fail the ID lookup below (they're not in members yet either
+    way) and correctly fall through to today's pending-member flow -- there's
+    no cheap way to tell "new member" from "existing member, badly garbled
+    name" before tapping, so every unmatched name gets one tap attempt; a
+    real new member just costs a few wasted seconds confirming that.
+
+    A resolved-by-ID name is taught back via save_correction(), NOT by
+    injecting member_id into the entry dict -- _vote_entries/resolve_entries
+    group observations by fuzzy name text, with no member_id concept at all,
+    so there's no clean seam to inject a resolved identity downstream.
+    save_correction() writes the OCR-name -> canonical-name mapping into
+    name_corrections, which RosterResolver checks first (before exact/fuzzy);
+    since _vote_entries builds its OWN resolver at the very end of this same
+    scroll_scan call, a correction saved mid-scroll is picked up automatically
+    by this run's own final vote, with zero special-casing needed.
+
+    For guild-filtered ranking modes and the guild scan itself (every row on
+    screen is already a confirmed RiffRaff member or a legitimate roster
+    candidate) -- NOT Guild Duel, whose unfiltered ~180-row mixed-guild list
+    would mean chasing far more other-guild misses than this is worth; that
+    mode keeps plain resolve_entries() with no hook.
+
+    Deliberately reuses the scroll already happening in scroll_scan instead of
+    a separate follow-up pass: an earlier version did a second pass with its
+    own re-navigation, which broke Arcane Lab live (over-scrolling to relocate
+    a row collapsed its list, stranding the target off-screen mid-pass) -- see
+    project memory. Tapping in-place while the row is already visible sidesteps
+    that whole class of problem."""
+    tapped: set[str] = set()
+
+    def on_stop(stop_img, stop_frame_entries: list[dict]) -> None:
+        seen_names = {e["name"] for e in stop_frame_entries}
+        # resolve_names() is the same lookup resolve_entries() uses at the end
+        # of the scan -- checking match status here (not via a separate
+        # resolver) keeps "does this OCR name match a known member" consistent
+        # with what the final result will actually show.
+        resolved_map, _ = resolve_names(list(seen_names))
+
+        for ocr_name in seen_names:
+            if ocr_name in tapped:
+                continue
+            member_id = resolved_map.get(ocr_name)
+            if member_id is not None and not members_missing_ingame_id([member_id]):
+                continue  # already matched and already has an ID -- nothing to do
+            tapped.add(ocr_name)
+
+            row_y = None
+            for box, text, _conf in ocr_image(stop_img):
+                cx, cy = block_center(box)
+                if SequenceMatcher(None, text.strip().lower(), ocr_name.lower()).ratio() >= 0.88:
+                    row_y = cy
+                    break
+            if row_y is None:
+                continue
+
+            tap(avatar_x, row_y + avatar_y_offset)
+            time.sleep(1.5)
+            user_id = read_user_id(screenshot())
+            back()
+            time.sleep(1.0)
+            mark_progress()  # real device work happened, regardless of outcome below --
+                              # capture_ingame_ids() had this exact gap (300s watchdog
+                              # fired mid-capture, confirmed live 2026-08-24) since it
+                              # never called mark_progress() from inside its tap loop
+            if user_id is None:
+                print(f"  {label}: '{ocr_name}' User ID not read, leaving as-is.")
+                continue
+
+            if member_id is None:
+                by_id = member_by_ingame_id(user_id)
+                if by_id is None:
+                    print(f"  {label}: '{ocr_name}' ID {user_id} matches no known member.")
+                    continue
+                canonical_name = names_for_ids([by_id]).get(by_id, ocr_name)
+                if canonical_name != ocr_name:
+                    save_correction(ocr_name, canonical_name, source="ingame_id")
+                print(f"  {label}: '{ocr_name}' resolved via ID {user_id} -> {canonical_name}.")
+            else:
+                set_ingame_id(member_id, user_id)
+                print(f"  {label}: '{ocr_name}' ID {user_id} stored.")
+
+    return on_stop

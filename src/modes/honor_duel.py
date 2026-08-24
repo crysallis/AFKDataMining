@@ -1,7 +1,7 @@
 """Honor Duel ranking scan · rank + honor points, single kept scan (overwrite)."""
 from db import init_db, save_honor_duel
 from nav import navigate_to_mode, apply_guild_filter
-from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_reentry_fn
+from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_reentry_fn, make_id_fallback_hook
 
 
 def _parse(img, ocr_results) -> list[dict]:
@@ -18,7 +18,8 @@ def scan() -> None:
     if not apply_guild_filter():
         print("HONOR_DUEL: guild filter failed, aborting.")
         return
-    entries = scroll_scan(_parse, "Honor Duel", reentry_fn=make_reentry_fn("HONOR_DUEL"))
+    entries = scroll_scan(_parse, "Honor Duel", reentry_fn=make_reentry_fn("HONOR_DUEL"),
+                          on_stop=make_id_fallback_hook("Honor Duel"))
     rows = resolve_entries(entries, "Honor Duel")
     saved = save_honor_duel(rows)
     print(f"HONOR_DUEL: saved {saved} entries.")

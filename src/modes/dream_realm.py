@@ -14,7 +14,8 @@ from db import init_db, get_missing_dream_realm_days, save_dream_realm, get_boss
 from device import screenshot, tap
 from nav import navigate_to_mode, apply_guild_filter, find_template, _t, _wait_until_stable
 from ocr import ocr_image, block_center
-from modes.common import parse_rank_rows, scroll_scan, resolve_entries, detect_tiers, tier_for_row
+from modes.common import (parse_rank_rows, scroll_scan, resolve_entries,
+                           detect_tiers, tier_for_row, make_id_fallback_hook)
 
 _SCORE_RE = re.compile(r"^[\d,.]+\s*[KMB]$", re.IGNORECASE)
 
@@ -208,7 +209,8 @@ def scan() -> None:
         if not apply_guild_filter():
             print(f"DREAM_REALM: guild filter failed for {day}, skipping.")
             continue
-        entries = scroll_scan(_parse, f"Dream Realm {_date_label(day)}")
+        entries = scroll_scan(_parse, f"Dream Realm {_date_label(day)}",
+                              on_stop=make_id_fallback_hook("Dream Realm"))
         rows = resolve_entries(entries, "Dream Realm")
         for r in rows:
             if not r.get("tier"):

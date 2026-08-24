@@ -8,6 +8,7 @@ out. The viewer's own row is sticky (pinned at a fixed position regardless
 of scroll), which occludes whatever real row would be there -- confirmed
 unavoidable even scrolling by hand, so that one member's row is accepted as
 unrecoverable rather than engineered around."""
+import logging
 from difflib import SequenceMatcher
 
 from db import init_db, get_guild_duel_period, save_guild_duel
@@ -38,23 +39,28 @@ def _is_our_guild(texts: list[str]) -> bool:
 
 
 def _parse(img, ocr_results) -> list[dict]:
+    rows = parse_rank_rows(img, ocr_results, list_y_min=LIST_Y_MIN)
+    kept = [row for row in rows if _is_our_guild(row.texts)]
+    logging.debug("Guild Duel: %d row(s) parsed, %d kept; dropped texts: %s",
+                  len(rows), len(kept),
+                  [row.texts for row in rows if row not in kept])
     return [
         {"name": row.name, "rank": row.rank,
          "crests": row.numbers[0] if row.numbers else None}
-        for row in parse_rank_rows(img, ocr_results, list_y_min=LIST_Y_MIN)
-        if _is_our_guild(row.texts)
+        for row in kept
     ]
 
 
-def scan() -> None:
+def scan(force: bool = False) -> None:
     init_db()
-    period = get_guild_duel_period()
+    period = get_guild_duel_period(force=force)
     if period is None:
         print("GUILD_DUEL: skipping (this week's period already scanned).")
         return
 
     navigate_to_guild_duel_battle_report()
-    entries = scroll_scan(_parse, "Guild Duel", scroll_fn=guild_duel_scroll_down)
+    entries = scroll_scan(_parse, "Guild Duel", scroll_fn=guild_duel_scroll_down,
+                          require_new=False, no_change_limit=4, max_scrolls=90)
     rows = resolve_entries(entries, "Guild Duel")
     saved = save_guild_duel(rows, period)
     print(f"GUILD_DUEL: saved {saved} entries for period {period}.")

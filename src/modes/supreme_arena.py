@@ -4,7 +4,7 @@ period (keyed by that week's Wednesday); a new period starts a new record set.""
 from db import init_db, get_supreme_period, save_supreme_arena
 from device import screenshot
 from nav import navigate_to_mode, apply_guild_filter, find_template, _t, _wait_until_stable
-from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_reentry_fn
+from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_reentry_fn, make_id_fallback_hook
 
 
 def _parse(img, ocr_results) -> list[dict]:
@@ -36,7 +36,8 @@ def scan() -> None:
     if not apply_guild_filter():
         print("SUPREME_ARENA: guild filter failed, aborting.")
         return
-    entries = scroll_scan(_parse, "Supreme Arena", reentry_fn=make_reentry_fn("SUPREME_ARENA"))
+    entries = scroll_scan(_parse, "Supreme Arena", reentry_fn=make_reentry_fn("SUPREME_ARENA"),
+                          on_stop=make_id_fallback_hook("Supreme Arena"))
     rows = resolve_entries(entries, "Supreme Arena")
     saved = save_supreme_arena(rows)
     print(f"SUPREME_ARENA: saved {saved} entries for period {period}.")

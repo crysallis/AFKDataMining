@@ -485,6 +485,14 @@ class ClashfrontsDeployScreen(RuntimeError):
     so callers can skip cleanly instead of retrying or surfacing an error."""
 
 
+class ClashfrontsNotActive(RuntimeError):
+    """Raised when the Clashfronts card never appeared on Battle Modes for
+    any flow attempt -- the event isn't currently running this cycle, not a
+    nav bug. Distinct from a plain nav-failure RuntimeError (e.g. dying at
+    the Manage button after finding the card) so callers can skip cleanly
+    instead of surfacing a MODE_FAILED."""
+
+
 def _on_clashfronts_deploy_screen() -> bool:
     """Once sign-ups close, the Clashfronts card leads straight to the battle
     deployment map ('Round 1', a 'Deploy' button) instead of the Manage
@@ -507,9 +515,11 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     card_label = MODE_CARD_LABEL["clashfronts"]
     logging.info("Navigating to Clashfronts sign-ups.")
 
+    card_never_found = True
     for attempt in range(1, flow_attempts + 1):
         if not navigate_to_overview():
             logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
+            card_never_found = False
             continue
 
         if not _tap_to_reach(
@@ -517,6 +527,7 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
             _is_at_battle_modes, "battle_modes", fallback_xy=None,
         ):
             logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
+            card_never_found = False
             continue
 
         if not _ocr_tap_text(
@@ -526,6 +537,7 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
             logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
             continue
         _wait_until_stable()
+        card_never_found = False
 
         # OCR reads the wrapped two-line button ('Manage Sign-' / 'Ups') as
         # 'ManageSign' + 'Ups' in separate blocks -- 'Manage' alone only
@@ -541,6 +553,10 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
         logging.info("Arrived at Clashfronts sign-ups list.")
         return
 
+    if card_never_found:
+        raise ClashfrontsNotActive(
+            f"Clashfronts card not found on Battle Modes after {flow_attempts} attempts "
+            "-- event likely not active this cycle.")
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_clashfronts.png"), screenshot())
     raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
 

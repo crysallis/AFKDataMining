@@ -53,7 +53,8 @@ TOTAL_RE = re.compile(r"Guild\s*Member\D*(\d+)\s*/\s*(\d+)", re.IGNORECASE)
 # Import AFTER the logging/Tee setup above so RapidOCR's init logs are captured
 # (both pull in the ocr module, which constructs RapidOCR at import time).
 from ocr import ocr_image as _ocr  # noqa: E402
-from modes.common import scroll_scan  # noqa: E402
+from modes.common import scroll_scan, make_id_fallback_hook  # noqa: E402
+from capture_ids import AVATAR_X, AVATAR_Y_OFFSET  # noqa: E402
 
 
 def _get_total_members(ocr_results) -> int:
@@ -161,7 +162,10 @@ def scrape_guild() -> tuple[list[Member], int]:
 
         # Same shared driver the mode scans use (the 'how'): multi-sample frames per
         # scroll stop, then resolve-then-vote per identity. _guild_parse is the 'what'.
-        entries = scroll_scan(_guild_parse, "Guild", reentry_fn=None)
+        # on_stop uses capture_ids.py's AVATAR_X/AVATAR_Y_OFFSET (not the ranking-card
+        # constants) since this is that same guild-list card layout, already tuned.
+        entries = scroll_scan(_guild_parse, "Guild", reentry_fn=None,
+                              on_stop=make_id_fallback_hook("Guild", AVATAR_X, AVATAR_Y_OFFSET))
         all_members = [_entry_to_member(e) for e in entries]
         print(f"Voted: {len(all_members)} members.")
         for m in all_members:
@@ -181,10 +185,12 @@ def scrape_guild() -> tuple[list[Member], int]:
 MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel")
 
 
-def run_modes(enabled: list[str]) -> None:
+def run_modes(enabled: list[str], force_rescan: bool = False) -> None:
     """Run each enabled game-mode ranking scan after the guild scan, with its
     own stall + game-progress watchdogs. One mode failing never blocks the
-    rest · failures are printed as MODE_FAILED lines the bot can surface."""
+    rest · failures are printed as MODE_FAILED lines the bot can surface.
+    force_rescan only applies to guild_duel (manually re-scanning an
+    already-saved week's period) · other modes don't have a force kwarg."""
     mark_activity()
     mark_progress()
     done = threading.Event()
@@ -193,8 +199,14 @@ def run_modes(enabled: list[str]) -> None:
     try:
         for mode in enabled:
             print(f"\nMode scan: {mode}")
+            mark_activity()
+            mark_progress()
             try:
-                importlib.import_module(f"modes.{mode}").scan()
+                mod = importlib.import_module(f"modes.{mode}")
+                if force_rescan and mode == "guild_duel":
+                    mod.scan(force=True)
+                else:
+                    mod.scan()
             except Exception as e:
                 print(f"MODE_FAILED: {mode} - {e}")
                 logging.exception("Mode scan %s failed", mode)
@@ -207,6 +219,9 @@ if __name__ == "__main__":
     cli.add_argument("--guild", action="store_true", help="Run the guild roster scan")
     for _mode in MODES:
         cli.add_argument(f"--{_mode.replace('_', '-')}", action="store_true")
+    cli.add_argument("--force-rescan", action="store_true",
+                      help="Re-scan guild_duel even if this week's period is already saved "
+                           "(overwrites, doesn't duplicate)")
     args = cli.parse_args()
 
     enabled = [m for m in MODES if getattr(args, m)]
@@ -218,4 +233,4 @@ if __name__ == "__main__":
             print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")
 
     if enabled:
-        run_modes(enabled)
+        run_modes(enabled, force_rescan=args.force_rescan)

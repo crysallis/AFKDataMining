@@ -15,7 +15,7 @@ from nav import (navigate_to_overview, _tap_to_reach, _is_at_battle_modes,
                  MODE_CARD_LABEL, _ocr_tap_text, _wait_until_stable,
                  find_template, TEMPLATES_DIR, apply_guild_filter, _t)
 from ocr import ocr_image, block_center
-from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_reentry_fn
+from modes.common import parse_rank_rows, scroll_scan, resolve_entries, make_id_fallback_hook
 
 # Tolerate l/1 OCR confusion the same way _norm_time already does elsewhere
 # ("Phase l" misread instead of "Phase 1") -- seen intermittently live.
@@ -128,16 +128,16 @@ def scan() -> None:
 
     def _scan_current_tab(p: int) -> None:
         """Scans whatever phase tab is currently selected on the rankings
-        screen. reentry_fn=None: make_reentry_fn's second pass re-taps
-        rankings_btn, which lands back on the CURRENT phase (Phase 2) --
-        unsafe here since it would silently mix Phase 2 reads into a Phase 1
-        backfill. Default frames_per_stop=2 already gives per-stop vote
-        redundancy without a second pass, so this only matters when
-        backfilling a past phase whose tab the reentry would lose."""
+        screen. reentry_fn=None: default frames_per_stop=2 already gives
+        per-stop vote redundancy without a second pass. The ID fallback hook
+        rides along on this same scroll (see make_id_fallback_hook) instead of
+        needing its own re-navigation, so it never risks landing on the wrong
+        phase tab the way a separate reentry pass would."""
         if not apply_guild_filter():
             print(f"AFK_STAGES: guild filter failed for phase {p}, skipping.")
             return
-        entries = scroll_scan(_parse, f"AFK Stages phase {p}", reentry_fn=None)
+        entries = scroll_scan(_parse, f"AFK Stages phase {p}", reentry_fn=None,
+                              on_stop=make_id_fallback_hook(f"AFK Stages phase {p}"))
         rows = resolve_entries(entries, f"AFK Stages phase {p}")
         saved = save_afk_stages(rows, season_id, p)
         print(f"AFK_STAGES: saved {saved} entries for season_id={season_id} phase={p}.")

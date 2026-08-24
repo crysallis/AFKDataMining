@@ -10,7 +10,8 @@ import re
 
 from ocr import block_center
 from db import init_db, save_clashfronts_signups
-from nav import navigate_to_clashfronts_signups, press_back, ClashfrontsDeployScreen
+from nav import (navigate_to_clashfronts_signups, press_back,
+                 ClashfrontsDeployScreen, ClashfrontsNotActive)
 from modes.common import (NUM_RE, SKIP_LABELS, scroll_scan, resolve_entries,
                           detect_tiers, tier_for_row, _warband_skip_set)
 
@@ -65,6 +66,9 @@ def scan() -> None:
     except ClashfrontsDeployScreen:
         press_back()
         print("CLASHFRONTS: sign-ups closed (deployment screen), skipping.")
+        return
+    except ClashfrontsNotActive:
+        print("CLASHFRONTS: card not found on Battle Modes, likely not active this cycle. Skipping.")
         return
     entries = scroll_scan(_parse, "Clashfronts")
     rows = resolve_entries(entries, "Clashfronts")

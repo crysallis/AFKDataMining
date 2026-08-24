@@ -24,6 +24,7 @@ scraper.log
 
 # DB file itself (shared with bot, not committed)
 guild.db
+guild.test.db
 
 # MemPalace per-project files (issue #185)
 mempalace.yaml

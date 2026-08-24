@@ -4,7 +4,7 @@ from db import init_db, save_arcane_lab
 from nav import navigate_to_mode, apply_guild_filter
 from ocr import block_center
 from modes.common import (parse_rank_rows, scroll_scan, resolve_entries,
-                           NUM_RE, make_reentry_fn)
+                           NUM_RE, make_reentry_fn, make_id_fallback_hook)
 
 _COLS = ("difficulty", "floor", "points")
 _COL_TOL = 80
@@ -55,7 +55,8 @@ def scan() -> None:
     if not apply_guild_filter():
         print("ARCANE_LAB: guild filter failed, aborting.")
         return
-    entries = scroll_scan(_parse, "Arcane Lab", reentry_fn=make_reentry_fn("ARCANE_LAB"))
+    entries = scroll_scan(_parse, "Arcane Lab", reentry_fn=make_reentry_fn("ARCANE_LAB"),
+                          on_stop=make_id_fallback_hook("Arcane Lab"))
     rows = resolve_entries(entries, "Arcane Lab")
     saved = save_arcane_lab(rows)
     print(f"ARCANE_LAB: saved {saved} entries.")

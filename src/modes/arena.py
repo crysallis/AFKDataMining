@@ -3,7 +3,7 @@ matching). Always ongoing, so this is a pure overwrite · no history kept."""
 from db import init_db, save_arena
 from nav import navigate_to_mode, apply_guild_filter
 from modes.common import (parse_rank_rows, scroll_scan, resolve_entries,
-                           detect_tiers, tier_for_row, make_reentry_fn)
+                           detect_tiers, tier_for_row, make_reentry_fn, make_id_fallback_hook)
 
 
 def _parse(img, ocr_results) -> list[dict]:
@@ -22,7 +22,8 @@ def scan() -> None:
     if not apply_guild_filter():
         print("ARENA: guild filter failed, aborting.")
         return
-    entries = scroll_scan(_parse, "Arena", reentry_fn=make_reentry_fn("ARENA"))
+    entries = scroll_scan(_parse, "Arena", reentry_fn=make_reentry_fn("ARENA"),
+                          on_stop=make_id_fallback_hook("Arena"))
     rows = resolve_entries(entries, "Arena")
     saved = save_arena(rows)
     print(f"ARENA: saved {saved} entries.")
