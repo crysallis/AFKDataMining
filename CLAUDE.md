@@ -32,11 +32,12 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/device.py` | ADB interface (screenshot, tap, swipe, scroll) · leak-free `_shell`, retry/restart logic |
 | `src/ocr.py` | Shared OCR wrapper (RapidOCR PP-OCRv5, v3 fallback) |
 | `src/parser.py` | Extracts structured `Member` data from OCR results · `NAME_X_MIN`, `PURE_POWER_RE`, `TOTAL_RE` live here |
-| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, name_corrections, member_name_history, dream_realm_bosses, dream_realm_boss_aliases, dream_realm_scores, afk_stage_rankings, arena_rankings, supreme_arena_rankings, honor_duel_rankings, arcane_lab_rankings, clashfronts_signups, guild_duel_rankings) · `guilds`/`warbands` are bot-owned (see below) · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` · `RosterResolver.resolve()` tries the raw OCR'd name first, falling back to `_strip_merged_tag()` only if that fails (see Gotchas) |
+| `src/db.py` | DB helpers · owns the shared schema (members, snapshots, member_snapshots, name_corrections, member_name_history, dream_realm_bosses, dream_realm_boss_aliases, dream_realm_scores, afk_stage_rankings, arena_rankings, supreme_arena_rankings, honor_duel_rankings, arcane_lab_rankings, clashfronts_signups, guild_duel_rankings) · `guilds`/`warbands` are bot-owned (see below) · schema changes: ALTER guild.db once, fold into the CREATE · `validate_names()` returns `tuple[list[Member], list[str]]` · `RosterResolver.resolve()` tries the raw OCR'd name first, falling back to `_strip_merged_tag()` only if that fails (see Gotchas) · `resolve_names()`'s exact-match fallback excludes `pending=1` rows (see ID-Assisted Name Resolution) · `member_by_ingame_id()`/`members_missing_ingame_id()` support that same feature, both treating `ingame_id = ''` the same as `NULL` |
 | `src/capture_template.py` | ADB screencap → crop → save template |
+| `src/capture_ids.py` | Standalone safety-net pass over the guild list for any member still missing an `ingame_id` after the main scan's `make_id_fallback_hook` already ran · unconditional early exit when nobody needs one · calls `mark_progress()` on real work now (didn't before — see ID-Assisted Name Resolution) |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
-| `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name |
-| `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote |
+| `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name · `scroll_scan()`'s `on_stop` hook + `make_id_fallback_hook()` (see ID-Assisted Name Resolution) |
+| `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote · all but `guild_duel.py` wired to `make_id_fallback_hook()` |
 | `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
 | `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite · detects and skips the post-signup deployment map |
 | `src/templates/` | OpenCV template images · must be captured via ADB |
@@ -270,6 +271,16 @@ row. No rank numbers on this screen at all.
   deploy screen is detected on the first miss. Same shape as
   `supreme_arena.py`'s inactive-screen handling, but text-detected rather than
   template-matched since "Deploy" is plain button text.
+- **Not-active detection (2026-08-23)**: separate from the deploy screen
+  above — when the Clashfronts card never appears on Battle Modes at all
+  (event genuinely not running this cycle), `navigate_to_clashfronts_signups()`
+  now raises `ClashfrontsNotActive` instead of a bare `RuntimeError`, only
+  when *every* flow attempt's failure point was specifically "card not
+  found" (a `card_never_found` flag flips permanently false on any other
+  failure step, so a mixed bag of failure reasons still falls through to
+  the generic error + debug screenshot). `clashfronts.py` catches it and
+  prints a clean skip line — no `press_back()` needed since nav never left
+  Battle Modes on this path.
 
 ## Guild Duel (weekly crest tracking)
 New recurring guild-vs-guild event (weekly). Members earn "crests" Mon-Fri;
@@ -358,6 +369,25 @@ Monday 00:00 UTC, no lag).
 - Uses its own `guild_duel_scroll_down()` (`device.py`) instead of the
   shared `scroll_down()` — the Battle Report popup's visible list area is
   shorter than the full Rankings screen the default swipe was tuned for.
+- **Stop-condition fix (2026-08-24)**: `scroll_scan`'s default early-stop
+  (`require_new`: break after 5 consecutive stops with zero *new* keys)
+  conflated "no rows kept this stop" with "list ended" for this mode
+  specifically — a stop full of other-guild rows produces zero kept rows
+  after `_is_our_guild()` filtering, which looked identical to genuinely
+  reaching the end. Confirmed live: a real scan stopped after only 6 stops
+  of a ~180-row list, saving just the viewer's own sticky row. Fixed by
+  giving `scroll_scan` `require_new`/`no_change_limit`/`max_scrolls`
+  params; Guild Duel passes `require_new=False` (trust only real screen
+  change via `no_change_limit=4`, more tolerant than the shared default of
+  2 since the swipe distance is itself unconfirmed) and `max_scrolls=90`
+  (1.5x the ~60-scroll math for a 180-row list at ~3 cards/scroll, to
+  absorb misfires/duplicate reads). `mark_progress()` now also fires on
+  real scroll change (not just new kept rows), since a long other-guild
+  stretch would otherwise starve the 300s game-progress watchdog.
+- `--force-rescan` CLI flag (`scraper.py`) bypasses `get_guild_duel_period`'s
+  already-saved-this-week gate for a manual re-scan; `save_guild_duel` is
+  `INSERT OR REPLACE` on `(member_id, period_start)` so re-saving overwrites
+  cleanly rather than duplicating.
 - **Known accepted gap**: the viewer's own row is sticky (pinned at a fixed
   position regardless of scroll position), occluding whatever real member
   row would otherwise be there in every sampled frame. Confirmed unavoidable
@@ -370,6 +400,94 @@ Monday 00:00 UTC, no lag).
   than left mixed with daily partial reads.
 - `_is_our_guild()` per-row guild-tag filtering (see above) is unchanged and
   still applies on this screen.
+
+## ID-Assisted Name Resolution (2026-08-24)
+
+A member's in-game User ID (`members.ingame_id`, captured via a tap on their
+profile avatar → "User ID:" text in the popup) is permanent once known — it
+never changes, unlike a display name OCR can garble differently every scan.
+`make_id_fallback_hook()` (`modes/common.py`) uses that: for the 6
+guild-filtered ranking modes (Arcane Lab, Dream Realm, AFK Stages, Arena,
+Supreme Arena, Honor Duel) plus the guild scan itself, a row whose OCR'd name
+fails to match anyone — or matches someone with no `ingame_id` on file yet —
+gets tapped for its ID while still on screen, either resolving the row to its
+real identity or backfilling the missing ID.
+
+- **Not Guild Duel or Clashfronts**: Guild Duel's unfiltered ~180-row
+  mixed-guild list would mean chasing far more other-guild misses than the
+  tap cost is worth; both keep plain `resolve_entries()` with no hook.
+- **Rides along on the scroll `scroll_scan` already does, per stop** — not a
+  separate follow-up pass. An earlier design *did* do a second pass with its
+  own re-navigation (needed to reset scroll position); that broke Arcane Lab
+  live — `device.scroll_to_top()`'s up-swipe collapses that mode's list when
+  it over-scrolls past the top, stranding the target row off-screen
+  mid-pass. Tapping in-place while the row is already visible sidesteps that
+  whole class of problem, and turned out faster overall despite the extra
+  tap (no full re-navigation needed).
+- `scroll_scan` gained an `on_stop(stop_img, stop_frame_entries)` hook,
+  called once per scroll stop (right after that stop's `frames_per_stop`
+  reads are collected, before scrolling on) — every existing caller that
+  doesn't pass it is unaffected. Deliberately uses the SAME 2-frame stop
+  vote as the rest of the scan for match/no-match decisions, not a stronger
+  redundancy — a row rarely reappears after scrolling past.
+- A resolved-by-ID identity is taught back via `save_correction()`
+  (`ocr_name` → `canonical_name` in `name_corrections`), NOT by injecting
+  `member_id` into the entry dict — `_vote_entries`/`resolve_entries` group
+  observations by fuzzy name text with no `member_id` concept, so there's no
+  clean seam to inject a resolved identity downstream. Since `_vote_entries`
+  builds its own fresh resolver at the very end of the SAME `scroll_scan`
+  call, a correction saved mid-scroll is picked up automatically by that
+  run's own final vote, with zero special-casing needed.
+- Guild scan wiring (`scraper.py`) passes `capture_ids.py`'s already-tuned
+  `AVATAR_X`/`AVATAR_Y_OFFSET` (120/55, guild-list card layout) rather than
+  the ranking-card constants — `make_id_fallback_hook()` takes them as
+  optional params, defaulting to the ranking-card values. On a genuinely
+  brand-new (never-seen) member, the ID lookup will also fail (they're not
+  in `members` yet either way) and correctly falls through to today's
+  pending-member flow — there's no cheap way to tell "new member" from
+  "existing member, badly garbled name" before tapping, so every unmatched
+  guild-scan name gets one tap attempt.
+- `RANK_CARD_AVATAR_X`/`RANK_CARD_AVATAR_Y_OFFSET` (`modes/common.py`, `215`/
+  `12`) are measured live against Arcane Lab's Rankings screen (name-block
+  anchor at `(414,783)`, avatar portrait center at `~(215,795)`) — an
+  initial placeholder guess (`120`/`55`, copied from the guild-list layout)
+  was confirmed wrong live ("way too high"). Cards share the same basic size
+  across ranking modes, so one measured constant should cover all of them.
+- `capture_ingame_ids()` (the older, separate standalone pass over the guild
+  list, still run after `scrape_guild()`'s main scroll as a safety net) has
+  an unconditional early exit — `if not members_needing_ingame_id(): return`
+  — so it costs nothing once the hook has already covered everyone during
+  the first pass. This existed before tonight; what changed is that it's
+  now reliable (see the `ingame_id = ''` bug below).
+
+### Two bugs found via live testing while building this
+
+- **`ingame_id` stored as `''` (empty string) is invisible to `IS NULL`
+  checks** — happened from a manual DB edit that cleared the field (most
+  DB tools write `''`, not `NULL`, on "clear"). `members_needing_ingame_id()`
+  and `members_missing_ingame_id()` both now check
+  `(ingame_id IS NULL OR ingame_id = '')`. Confirmed live twice: once via
+  `capture_ingame_ids()` silently skipping two members whose IDs had been
+  manually cleared for testing, printing "All members have an in-game ID."
+- **`resolve_names()`'s exact-match fallback matched unreviewed pending
+  rows**, confirmed live 2026-08-24: a single-frame OCR garble ("to") of
+  NickNackN's card got created as a normal `pending=1` row by
+  `validate_names()` (expected, correct behavior for a genuinely unmatched
+  read). A *later*, unrelated scan happened to garble NickNackN's card the
+  *same* way again — `resolve_names()`'s `raw.lower() in id_by_name`
+  fallback (originally written for a legitimate case: a real member missed
+  by the latest guild scan but still visible on a mode screen, so not in
+  `_get_active_roster()`) didn't distinguish that bogus pending row from a
+  real one, matched the second garbled read straight to the first bogus
+  row, and the new ID-fallback hook then wrote NickNackN's real, freshly-
+  captured `ingame_id` onto the bogus row — silently creating a duplicate
+  that now *looked* legitimate instead of the harmless, reviewable
+  duplicate it should have stayed. `resolve_names()` now excludes
+  `pending=1` from its fallback's candidate pool (`id_by_name`). The
+  bogus row was merged into the real member by hand (mirroring
+  `DiscordBotAfkJ/utils/db.js`'s `mergeMembers` steps for the tables that
+  actually had data) since the bot's own `mergeMembers` was blocked by an
+  unrelated `better-sqlite3` Node-ABI mismatch in that terminal session.
 
 ## Historical Data
 10 snapshots imported covering 10/10/2025 through 5/3/2026.
