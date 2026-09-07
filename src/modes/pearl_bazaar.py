@@ -6,8 +6,9 @@ price and remaining daily selling cap. No guild filter -- most of the top
 (remaining cap changes minute to minute), so the table is wiped at the
 START of this scan, not the end."""
 import re
+import time
 
-from db import wipe_pearl_bazaar_prices, save_pearl_bazaar_row
+from db import _connect, wipe_pearl_bazaar_prices, save_pearl_bazaar_row
 from device import screenshot, tap, back
 from nav import navigate_to_mode, find_template, _t
 from ocr import ocr_image
@@ -34,7 +35,6 @@ def _capture_pearl_bazaar_row(rank: int, user_id: int | None) -> None:
         return
 
     tap(*icon_pos)
-    import time
     time.sleep(1.2)
 
     price_screen = screenshot()
@@ -46,13 +46,14 @@ def _capture_pearl_bazaar_row(rank: int, user_id: int | None) -> None:
     price = None
     cap_remaining = None
     for _box, text, _conf in ocr_image(price_screen):
+        cap_match = CAP_RE.search(text)
+        if cap_match:
+            cap_remaining = int(cap_match.group(1))
+            continue
         if price is None:
             m = PRICE_RE.search(text)
             if m:
                 price = int(m.group(1))
-        m = CAP_RE.search(text)
-        if m:
-            cap_remaining = int(m.group(1))
 
     # Exactly one Back from the pricing screen returns straight to the rank
     # list -- confirmed live, the game skips the intermediate profile screen.
@@ -75,10 +76,18 @@ def scan() -> str:
             return "skipped"
         raise
 
-    from device import tap as _tap
     daily_calc = find_template(screenshot(), _t("supreme_arena_daily_calc"), threshold=0.80)
     if daily_calc:
-        _tap(*daily_calc)
+        tap(*daily_calc)
+
+    with _connect() as conn:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pearl_bazaar_prices'"
+        ).fetchone()
+    if not table_exists:
+        print("PEARL_BAZAAR: pearl_bazaar_prices table not found (bot-owned schema -- "
+              "has the Discord bot process run at least once against this guild.db?). Aborting.")
+        return "failed"
 
     wipe_pearl_bazaar_prices()
 
