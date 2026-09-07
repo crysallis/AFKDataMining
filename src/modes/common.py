@@ -654,3 +654,53 @@ def make_id_fallback_hook(label: str, avatar_x: int = RANK_CARD_AVATAR_X,
                 print(f"  {label}: '{ocr_name}' ID {user_id} stored.")
 
     return on_stop
+
+
+def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
+                       avatar_y_offset: int = RANK_CARD_AVATAR_Y_OFFSET):
+    """Builds an on_stop hook (pass to scroll_scan) that taps EVERY row's
+    banner while it's still on screen, reads that row's permanent in-game
+    User ID from the profile popup, then hands off to row_callback(rank,
+    user_id) for any further mode-specific drill-in (e.g. Pearl Bazaar
+    tapping a second icon) before backing out.
+
+    Unlike make_id_fallback_hook, this fires unconditionally for every row
+    (no roster-match short-circuit) since it's meant for unfiltered,
+    unguilded lists where there's no resolved member name to check against.
+    row_callback owns everything past reading the User ID -- this hook only
+    guarantees the tap/OCR/back sequence for the profile step and that
+    row_callback runs exactly once per row while it's on screen, honoring
+    the same reuse-the-scroll-in-progress approach that avoided Arcane
+    Lab's over-scroll bug (see make_id_fallback_hook's docstring / project
+    memory) -- no second pass, no re-navigation.
+
+    row_callback is responsible for its own further taps/backs (e.g. Pearl
+    icon -> price screen -> back) and must leave the screen back at the
+    rank list before returning, matching this hook's own contract to
+    scroll_scan."""
+    tapped_ranks: set[int] = set()
+
+    def on_stop(stop_img, stop_frame_entries: list[dict]) -> None:
+        for entry in stop_frame_entries:
+            rank = entry.get('rank')
+            if rank is None or rank in tapped_ranks:
+                continue
+            tapped_ranks.add(rank)
+
+            row_y = None
+            for box, text, _conf in ocr_image(stop_img):
+                cx, cy = block_center(box)
+                if SequenceMatcher(None, text.strip().lower(), entry.get('name', '').lower()).ratio() >= 0.88:
+                    row_y = cy
+                    break
+            if row_y is None:
+                continue
+
+            tap(avatar_x, row_y + avatar_y_offset)
+            time.sleep(1.5)
+            user_id = read_user_id(screenshot())
+            mark_progress()  # real device work happened regardless of outcome
+
+            row_callback(rank, user_id)
+
+    return on_stop
