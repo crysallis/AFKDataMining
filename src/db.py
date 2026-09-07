@@ -1020,6 +1020,28 @@ def save_supreme_arena(entries: list[dict], force: bool = False) -> int:
     return len(entries)
 
 
+def wipe_pearl_bazaar_prices() -> None:
+    """Clears the previous run's rows at the START of a new run (not the end)
+    -- only the latest run ever matters (remaining cap changes minute to
+    minute), and a crash mid-run should leave this run's partial-but-fresh
+    data rather than stale data from last time."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM pearl_bazaar_prices")
+
+
+def save_pearl_bazaar_row(rank: int, ingame_id: int, price: int, selling_cap_remaining: int) -> None:
+    """Writes one row immediately as it's captured -- same immediate-write
+    pattern as every other save_*() here, so a crash partway through the
+    100-row drill-in never loses rows already captured this run."""
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO pearl_bazaar_prices
+               (rank, ingame_id, price, selling_cap_remaining, scanned_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (rank, ingame_id, price, selling_cap_remaining, scanned_at))
+
+
 def save_guild_duel(entries: list[dict], period: str) -> int:
     scanned_at = _utcnow().isoformat()
     with _connect() as conn:
