@@ -262,6 +262,21 @@ def _current_week_start() -> str:
     return monday.isoformat()
 
 
+def log_scan_timing(mode: str, status: str, duration_ms: int, run_started_at: str) -> None:
+    """Writes directly into the bot-owned scan_timings table (utils/db.js owns
+    the CREATE, created before any scan ever runs) -- same immediate-write
+    pattern as every other save_*() here, so a crash mid-run never loses the
+    timing of modes that already finished. One shared guild.db, so either side
+    can write whichever table needs it; this one just happens to be defined in
+    the bot repo's schema."""
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO scan_timings (mode, status, duration_ms, run_started_at) VALUES (?, ?, ?, ?)",
+            (mode, status, duration_ms, run_started_at),
+        )
+        conn.commit()
+
+
 def save_snapshot(members: list[Member], pending_names: set[str] | None = None) -> tuple[int, int]:
     scraped_at = _utcnow()
     scraped_at_str = scraped_at.isoformat()

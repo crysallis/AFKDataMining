@@ -91,7 +91,7 @@ def scan() -> None:
         season_id = _active_season_id(conn)
     if season_id is None:
         print("AFK_STAGES: no active season in DB, aborting.")
-        return
+        return "failed"
 
     # Navigate to AFK Stage main screen (card tap only) to read current phase
     def _to_afk_stage_main() -> bool:
@@ -110,23 +110,23 @@ def scan() -> None:
 
     if not _to_afk_stage_main():
         print("AFK_STAGES: could not reach AFK Stage main screen.")
-        return
+        return "failed"
 
     phase = _detect_phase(ocr_image(screenshot()))
     if phase is None:
         print("AFK_STAGES: could not detect phase, aborting.")
-        return
+        return "failed"
     print(f"AFK_STAGES: season_id={season_id}, phase={phase}")
 
     # Tap rankings button to enter the ranking list
     rankings_pos = find_template(screenshot(), TEMPLATES_DIR / "rankings_btn.png", threshold=0.75)
     if not rankings_pos:
         print("AFK_STAGES: rankings button not found.")
-        return
+        return "failed"
     tap(*rankings_pos)
     _wait_until_stable()
 
-    def _scan_current_tab(p: int) -> None:
+    def _scan_current_tab(p: int) -> str:
         """Scans whatever phase tab is currently selected on the rankings
         screen. reentry_fn=None: default frames_per_stop=2 already gives
         per-stop vote redundancy without a second pass. The ID fallback hook
@@ -135,12 +135,13 @@ def scan() -> None:
         phase tab the way a separate reentry pass would."""
         if not apply_guild_filter():
             print(f"AFK_STAGES: guild filter failed for phase {p}, skipping.")
-            return
+            return "failed"
         entries = scroll_scan(_parse, f"AFK Stages phase {p}", reentry_fn=None,
                               on_stop=make_id_fallback_hook(f"AFK Stages phase {p}"))
         rows = resolve_entries(entries, f"AFK Stages phase {p}")
         saved = save_afk_stages(rows, season_id, p)
         print(f"AFK_STAGES: saved {saved} entries for season_id={season_id} phase={p}.")
+        return "success"
 
     # One-time final scan of the phase that just ended: if the CURRENT phase
     # has no rows yet for this season, this is the first scan since it started,
@@ -165,4 +166,4 @@ def scan() -> None:
         else:
             print(f"AFK_STAGES: could not select phase {prev_phase} tab, skipping backfill.")
 
-    _scan_current_tab(phase)
+    return _scan_current_tab(phase)

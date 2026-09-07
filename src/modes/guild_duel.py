@@ -56,7 +56,7 @@ def scan(force: bool = False) -> None:
     period = get_guild_duel_period(force=force)
     if period is None:
         print("GUILD_DUEL: skipping (this week's period already scanned).")
-        return
+        return "skipped"
 
     navigate_to_guild_duel_battle_report()
     entries = scroll_scan(_parse, "Guild Duel", scroll_fn=guild_duel_scroll_down,
@@ -64,3 +64,4 @@ def scan(force: bool = False) -> None:
     rows = resolve_entries(entries, "Guild Duel")
     saved = save_guild_duel(rows, period)
     print(f"GUILD_DUEL: saved {saved} entries for period {period}.")
+    return "success"

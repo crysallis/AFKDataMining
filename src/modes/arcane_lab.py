@@ -54,9 +54,10 @@ def scan() -> None:
     navigate_to_mode("arcane_lab")
     if not apply_guild_filter():
         print("ARCANE_LAB: guild filter failed, aborting.")
-        return
+        return "failed"
     entries = scroll_scan(_parse, "Arcane Lab", reentry_fn=make_reentry_fn("ARCANE_LAB"),
                           on_stop=make_id_fallback_hook("Arcane Lab"))
     rows = resolve_entries(entries, "Arcane Lab")
     saved = save_arcane_lab(rows)
     print(f"ARCANE_LAB: saved {saved} entries.")
+    return "success"

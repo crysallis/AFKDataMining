@@ -142,7 +142,7 @@ def scan() -> None:
     missing = get_missing_dream_realm_days()
     if not missing:
         print("DREAM_REALM: all recent days already captured, nothing to do.")
-        return
+        return "skipped"
 
     # Navigate to Dream Realm MAIN SCREEN (card tap only, not Rankings yet)
     # so we can read the boss name before entering the ranking list.
@@ -167,7 +167,7 @@ def scan() -> None:
 
     if not _to_dream_realm_main():
         print("DREAM_REALM: could not reach Dream Realm main screen.")
-        return
+        return "failed"
 
     # Boss name is visible on the Dream Realm main screen
     boss_name = _read_boss_name(_ocr(screenshot()))
@@ -180,7 +180,7 @@ def scan() -> None:
     rankings_pos = find_template(screenshot(), TEMPLATES_DIR / "rankings_btn.png", threshold=0.75)
     if not rankings_pos:
         print("DREAM_REALM: rankings button not found.")
-        return
+        return "failed"
     tap(*rankings_pos)
     _wait_until_stable()
 
@@ -218,3 +218,4 @@ def scan() -> None:
         saved = save_dream_realm(rows, day, day_boss_name or boss_name, day_boss_id)
         display_boss = day_boss_name or boss_name or "unknown"
         print(f"DREAM_REALM: saved {saved} entries for {day} (boss: {display_boss}).")
+    return "success"

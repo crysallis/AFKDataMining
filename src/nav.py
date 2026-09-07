@@ -515,11 +515,9 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     card_label = MODE_CARD_LABEL["clashfronts"]
     logging.info("Navigating to Clashfronts sign-ups.")
 
-    card_never_found = True
     for attempt in range(1, flow_attempts + 1):
         if not navigate_to_overview():
             logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
-            card_never_found = False
             continue
 
         if not _tap_to_reach(
@@ -527,17 +525,24 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
             _is_at_battle_modes, "battle_modes", fallback_xy=None,
         ):
             logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
-            card_never_found = False
             continue
 
         if not _ocr_tap_text(
             ocr_image, card_label, f"card:{card_label}",
             scroll_between=True, attempts=5,
         ):
-            logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
-            continue
+            # A full scroll-search coming up completely empty is decisive
+            # enough on its own -- the card isn't on Battle Modes right now.
+            # Re-homing and repeating the same 5-attempt search 2 more times
+            # (the old behavior) only re-confirms the same result at ~3x the
+            # cost, so stop here instead of falling through to the outer
+            # flow_attempts retry. Overview/Battle-Modes nav failures above
+            # still retry -- those are path hiccups, not a "card absent"
+            # signal, and deserve another attempt.
+            raise ClashfrontsNotActive(
+                f"Clashfronts card not found on Battle Modes after a full scroll search "
+                f"(flow attempt {attempt}/{flow_attempts}) -- event likely not active this cycle.")
         _wait_until_stable()
-        card_never_found = False
 
         # OCR reads the wrapped two-line button ('Manage Sign-' / 'Ups') as
         # 'ManageSign' + 'Ups' in separate blocks -- 'Manage' alone only
@@ -553,10 +558,6 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
         logging.info("Arrived at Clashfronts sign-ups list.")
         return
 
-    if card_never_found:
-        raise ClashfrontsNotActive(
-            f"Clashfronts card not found on Battle Modes after {flow_attempts} attempts "
-            "-- event likely not active this cycle.")
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_clashfronts.png"), screenshot())
     raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
 

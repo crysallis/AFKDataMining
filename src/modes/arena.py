@@ -21,9 +21,10 @@ def scan() -> None:
     navigate_to_mode("arena")
     if not apply_guild_filter():
         print("ARENA: guild filter failed, aborting.")
-        return
+        return "failed"
     entries = scroll_scan(_parse, "Arena", reentry_fn=make_reentry_fn("ARENA"),
                           on_stop=make_id_fallback_hook("Arena"))
     rows = resolve_entries(entries, "Arena")
     saved = save_arena(rows)
     print(f"ARENA: saved {saved} entries.")
+    return "success"

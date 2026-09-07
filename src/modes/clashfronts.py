@@ -66,12 +66,13 @@ def scan() -> None:
     except ClashfrontsDeployScreen:
         press_back()
         print("CLASHFRONTS: sign-ups closed (deployment screen), skipping.")
-        return
+        return "skipped"
     except ClashfrontsNotActive:
         print("CLASHFRONTS: card not found on Battle Modes, likely not active this cycle. Skipping.")
-        return
+        return "skipped"
     entries = scroll_scan(_parse, "Clashfronts")
     rows = resolve_entries(entries, "Clashfronts")
     saved = save_clashfronts_signups(rows)
     selected_count = sum(1 for r in rows if r.get("selected"))
     print(f"CLASHFRONTS: saved {saved} signups ({selected_count} selected).")
+    return "success"

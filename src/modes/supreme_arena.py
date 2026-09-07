@@ -16,13 +16,13 @@ def scan() -> None:
     period = get_supreme_period()
     if period is None:
         print("SUPREME_ARENA: skipping (not Mon/Tue UTC, or already scanned today).")
-        return
+        return "skipped"
     try:
         navigate_to_mode("supreme_arena")
     except RuntimeError:
         if find_template(screenshot(), _t("supreme_arena_inactive"), threshold=0.80):
             print("SUPREME_ARENA: inactive screen detected, skipping.")
-            return
+            return "skipped"
         raise
 
     # "Daily Calculation" popup — appears once per day on first load.
@@ -35,9 +35,10 @@ def scan() -> None:
 
     if not apply_guild_filter():
         print("SUPREME_ARENA: guild filter failed, aborting.")
-        return
+        return "failed"
     entries = scroll_scan(_parse, "Supreme Arena", reentry_fn=make_reentry_fn("SUPREME_ARENA"),
                           on_stop=make_id_fallback_hook("Supreme Arena"))
     rows = resolve_entries(entries, "Supreme Arena")
     saved = save_supreme_arena(rows)
     print(f"SUPREME_ARENA: saved {saved} entries for period {period}.")
+    return "success"

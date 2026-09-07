@@ -17,9 +17,10 @@ def scan() -> None:
     navigate_to_mode("honor_duel")
     if not apply_guild_filter():
         print("HONOR_DUEL: guild filter failed, aborting.")
-        return
+        return "failed"
     entries = scroll_scan(_parse, "Honor Duel", reentry_fn=make_reentry_fn("HONOR_DUEL"),
                           on_stop=make_id_fallback_hook("Honor Duel"))
     rows = resolve_entries(entries, "Honor Duel")
     saved = save_honor_duel(rows)
     print(f"HONOR_DUEL: saved {saved} entries.")
+    return "success"

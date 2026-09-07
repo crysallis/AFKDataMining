@@ -5,13 +5,14 @@ import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 from device import (screenshot, scroll_to_top,
                     ensure_resolution, seconds_since_activity, mark_activity, kill_adb_process,
                     seconds_since_progress, mark_progress, restart_game)
 from nav import navigate_to_guild_members, wait_for_boot
 from parser import parse_members, Member
-from db import init_db, save_snapshot, validate_names
+from db import init_db, save_snapshot, validate_names, log_scan_timing, _utcnow
 from capture_ids import capture_ingame_ids
 
 STALL_SECONDS = 120  # abort if no successful ADB call for this long (true hang, not slow)
@@ -185,7 +186,16 @@ def scrape_guild() -> tuple[list[Member], int]:
 MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel")
 
 
-def run_modes(enabled: list[str], force_rescan: bool = False) -> None:
+def _report_timing(mode: str, status: str, elapsed_seconds: float, run_started_at: str) -> None:
+    """Writes the timing row directly to guild.db (scan_timings, bot-owned
+    schema) the instant this mode finishes -- not routed through stdout/the
+    bot, so a later crash in a DIFFERENT mode this same run can never lose a
+    row that already landed. Mirrors how every other scan result is saved:
+    immediately, by whichever side of the two repos produced it."""
+    log_scan_timing(mode, status, round(elapsed_seconds * 1000), run_started_at)
+
+
+def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = False) -> None:
     """Run each enabled game-mode ranking scan after the guild scan, with its
     own stall + game-progress watchdogs. One mode failing never blocks the
     rest · failures are printed as MODE_FAILED lines the bot can surface.
@@ -201,15 +211,18 @@ def run_modes(enabled: list[str], force_rescan: bool = False) -> None:
             print(f"\nMode scan: {mode}")
             mark_activity()
             mark_progress()
+            start = time.time()
             try:
                 mod = importlib.import_module(f"modes.{mode}")
                 if force_rescan and mode == "guild_duel":
-                    mod.scan(force=True)
+                    status = mod.scan(force=True)
                 else:
-                    mod.scan()
+                    status = mod.scan()
+                _report_timing(mode, status or "success", time.time() - start, run_started_at)
             except Exception as e:
                 print(f"MODE_FAILED: {mode} - {e}")
                 logging.exception("Mode scan %s failed", mode)
+                _report_timing(mode, "failed", time.time() - start, run_started_at)
     finally:
         done.set()
 
@@ -225,12 +238,19 @@ if __name__ == "__main__":
     args = cli.parse_args()
 
     enabled = [m for m in MODES if getattr(args, m)]
+    run_started_at = _utcnow().isoformat()
 
     if args.guild or not enabled:
-        members, actual_count = scrape_guild()
+        _guild_start = time.time()
+        try:
+            members, actual_count = scrape_guild()
+        except Exception:
+            _report_timing("guild", "failed", time.time() - _guild_start, run_started_at)
+            raise
+        _report_timing("guild", "success", time.time() - _guild_start, run_started_at)
         print(f"\nDone. Captured {actual_count} members.")
         for m in members:
             print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")
 
     if enabled:
-        run_modes(enabled, force_rescan=args.force_rescan)
+        run_modes(enabled, run_started_at, force_rescan=args.force_rescan)
