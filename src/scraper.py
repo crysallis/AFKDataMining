@@ -183,7 +183,7 @@ def scrape_guild() -> tuple[list[Member], int]:
         _done.set()
 
 
-MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel")
+MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel", "pearl_bazaar")
 
 
 def _report_timing(mode: str, status: str, elapsed_seconds: float, run_started_at: str) -> None:
