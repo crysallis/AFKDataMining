@@ -668,7 +668,7 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
     (no roster-match short-circuit) since it's meant for unfiltered,
     unguilded lists where there's no resolved member name to check against.
     row_callback owns everything past reading the User ID -- this hook only
-    guarantees the tap/OCR/back sequence for the profile step and that
+    guarantees the tap/OCR sequence for the profile step and that
     row_callback runs exactly once per row while it's on screen, honoring
     the same reuse-the-scroll-in-progress approach that avoided Arcane
     Lab's over-scroll bug (see make_id_fallback_hook's docstring / project
@@ -685,7 +685,6 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
             rank = entry.get('rank')
             if rank is None or rank in tapped_ranks:
                 continue
-            tapped_ranks.add(rank)
 
             row_y = None
             for box, text, _conf in ocr_image(stop_img):
@@ -694,7 +693,9 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
                     row_y = cy
                     break
             if row_y is None:
+                print(f"  rank {rank}: row not found on this frame, will retry on a later stop.")
                 continue
+            tapped_ranks.add(rank)
 
             tap(avatar_x, row_y + avatar_y_offset)
             time.sleep(1.5)
