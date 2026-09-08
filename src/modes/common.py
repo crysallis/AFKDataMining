@@ -656,7 +656,7 @@ def make_id_fallback_hook(label: str, avatar_x: int = RANK_CARD_AVATAR_X,
     return on_stop
 
 
-def make_verified_scroll_down(max_retries: int = 3):
+def make_verified_scroll_down(max_retries: int = 10):
     """Builds a scroll_fn (pass to scroll_scan) that re-swipes if the list
     didn't actually advance, instead of trusting a single fixed-distance
     scroll_down() to always move the list by the same amount.
@@ -671,6 +671,13 @@ def make_verified_scroll_down(max_retries: int = 3):
     keys sat at 0 for 5+ consecutive stops -- the same already-seen rows
     were being re-read because the list had barely moved, not because
     anything had broken.
+
+    max_retries defaults high (10, not 3) because Daniel confirmed live
+    the snap-back itself grows with depth -- "you'll have to scroll a lot
+    each time and more the farther you get in the list" -- so a low fixed
+    cap would work near the top of a ~100-row list and then silently run
+    out exactly where the problem is worst. A retry that gives up early
+    looks identical to one that never ran: both leave new keys at 0.
 
     Verifies progress via the MAXIMUM rank visible in _scan_rank_column's
     raw output, not the topmost -- the pinned top-3 podium badges are
@@ -691,6 +698,9 @@ def make_verified_scroll_down(max_retries: int = 3):
             logging.warning("verified_scroll: no rank progress (%d -> %d), retrying.",
                             before_max, after_max)
             before_max = after_max
+
+        logging.warning("verified_scroll: exhausted %d retries with no rank progress "
+                        "(stuck at %d).", max_retries, before_max)
 
     return scroll_fn
 
