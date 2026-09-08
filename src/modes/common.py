@@ -656,55 +656,6 @@ def make_id_fallback_hook(label: str, avatar_x: int = RANK_CARD_AVATAR_X,
     return on_stop
 
 
-def make_verified_scroll_down(max_retries: int = 10):
-    """Builds a scroll_fn (pass to scroll_scan) that re-swipes if the list
-    didn't actually advance, instead of trusting a single fixed-distance
-    scroll_down() to always move the list by the same amount.
-
-    Built for make_drill_in_hook's use case: confirmed live 2026-09-08
-    (Daniel, across several ranking modes, not just Pearl Bazaar) that
-    backing out of a row drilled in far enough down the list snaps the list
-    back up slightly -- the deeper into the list, the more this snap-back
-    eats into scroll_down()'s fixed ~620px throw, until net progress per
-    scroll approaches zero. A live Pearl Bazaar run showed this exactly:
-    obs total climbed steadily every stop (OCR was reading fine) while new
-    keys sat at 0 for 5+ consecutive stops -- the same already-seen rows
-    were being re-read because the list had barely moved, not because
-    anything had broken.
-
-    max_retries defaults high (10, not 3) because Daniel confirmed live
-    the snap-back itself grows with depth -- "you'll have to scroll a lot
-    each time and more the farther you get in the list" -- so a low fixed
-    cap would work near the top of a ~100-row list and then silently run
-    out exactly where the problem is worst. A retry that gives up early
-    looks identical to one that never ran: both leave new keys at 0.
-
-    Verifies progress via the MAXIMUM rank visible in _scan_rank_column's
-    raw output, not the topmost -- the pinned top-3 podium badges are
-    always present and always topmost, so a topmost-based check would
-    never detect real movement. Max rank strictly increases as the list
-    scrolls forward and is podium-immune with no exclusion zone needed."""
-    def scroll_fn() -> None:
-        before = screenshot()
-        before_max = max((rv for _sy, rv in _scan_rank_column(before)), default=0)
-
-        for _attempt in range(max_retries):
-            scroll_down()
-            time.sleep(1.2)
-            after = screenshot()
-            after_max = max((rv for _sy, rv in _scan_rank_column(after)), default=0)
-            if after_max > before_max:
-                return
-            logging.warning("verified_scroll: no rank progress (%d -> %d), retrying.",
-                            before_max, after_max)
-            before_max = after_max
-
-        logging.warning("verified_scroll: exhausted %d retries with no rank progress "
-                        "(stuck at %d).", max_retries, before_max)
-
-    return scroll_fn
-
-
 def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
                        avatar_y_offset: int = RANK_CARD_AVATAR_Y_OFFSET):
     """Builds an on_stop hook (pass to scroll_scan) that taps EVERY row's
