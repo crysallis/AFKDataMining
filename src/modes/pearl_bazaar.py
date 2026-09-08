@@ -8,9 +8,11 @@ START of this scan, not the end."""
 import re
 import time
 
+import cv2
+
 from db import _connect, wipe_pearl_bazaar_prices, save_pearl_bazaar_row
 from device import screenshot, tap, back
-from nav import navigate_to_mode, find_template, _t
+from nav import navigate_to_mode, find_template, _t, TEMPLATES_DIR
 from ocr import ocr_image, block_center
 from modes.common import parse_rank_rows, scroll_scan, make_drill_in_hook
 
@@ -58,6 +60,15 @@ def _make_row_capturer(counters: dict):
         counters["drilled"] += 1
 
         if user_id is None:
+            # Debug capture -- this path is ambiguous between "opened a real
+            # profile but OCR missed the ID text" (one back() is correct) and
+            # "the tap missed the row/banner entirely" (a back() here isn't
+            # undoing anything, and can cascade further up the nav stack than
+            # intended) -- confirmed live 2026-09-08 this happens and the scan
+            # goes completely dark afterward. Same debug_*.png convention as
+            # nav.py's own failure captures.
+            cv2.imwrite(str(TEMPLATES_DIR.parent / f"debug_pearl_bazaar_no_id_rank{rank}.png"),
+                        screenshot())
             print(f"PEARL_BAZAAR: rank {rank} User ID not read, skipping.")
             back()
             time.sleep(1.0)
