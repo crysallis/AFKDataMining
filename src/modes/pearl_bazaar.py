@@ -11,7 +11,7 @@ import time
 from db import _connect, wipe_pearl_bazaar_prices, save_pearl_bazaar_row
 from device import screenshot, tap, back
 from nav import navigate_to_mode, find_template, _t
-from ocr import ocr_image
+from ocr import ocr_image, block_center
 from modes.common import parse_rank_rows, scroll_scan, make_drill_in_hook
 
 PRICE_RE = re.compile(r"\b(\d{3})\b")
@@ -27,6 +27,20 @@ CAP_RE = re.compile(r"Total\s*Daily\s*Selling\s*Cap\D*(\d+)", re.IGNORECASE)
 # price+cap block sits well above this line; re-verify if the game's layout
 # ever changes.
 PRICE_CAP_REGION_Y_MAX = 1440
+
+# The player's own Fishbo (currency) balance is a 3-digit number pinned at
+# the top-right of the screen (measured live 2026-09-08 at (935,35), same
+# shape/x-range every time) -- an unscoped PRICE_RE match found this FIRST on
+# every single row of a live scan, since OCR returns screen-top blocks before
+# the price panel further down, producing the same wrong "price" (the coin
+# balance) for every seller regardless of their real price. The real price
+# sits directly under the "Today's Price" label matched by
+# pearl_bazaar_price_label (measured live: label y=1026, price y=1130 --
+# ~104px below, same x). A tight y-window anchored on the label (not just
+# "below the label", which would also catch "Daily Selling Cap per Visitor:
+# 20" at y=1341) keeps this to the one real price block.
+PRICE_Y_OFFSET_MIN = 50
+PRICE_Y_OFFSET_MAX = 160
 
 
 def _parse(img, ocr_results) -> list[dict]:
@@ -66,21 +80,25 @@ def _make_row_capturer(counters: dict):
         time.sleep(2.5)
 
         price_screen = screenshot()
-        if not find_template(price_screen, _t("pearl_bazaar_price_label"), threshold=0.80):
+        label_pos = find_template(price_screen, _t("pearl_bazaar_price_label"), threshold=0.80)
+        if not label_pos:
             print(f"PEARL_BAZAAR: rank {rank} (ID {user_id}) Pearl screen didn't load, skipping.")
             back()
             time.sleep(1.0)
             return
+        _label_x, label_y = label_pos
+        price_y_min = label_y + PRICE_Y_OFFSET_MIN
+        price_y_max = label_y + PRICE_Y_OFFSET_MAX
 
         price = None
         cap_remaining = None
         cropped_screen = price_screen[:PRICE_CAP_REGION_Y_MAX, :]
-        for _box, text, _conf in ocr_image(cropped_screen):
+        for box, text, _conf in ocr_image(cropped_screen):
             cap_match = CAP_RE.search(text)
             if cap_match:
                 cap_remaining = int(cap_match.group(1))
                 continue
-            if price is None:
+            if price is None and price_y_min <= block_center(box)[1] <= price_y_max:
                 m = PRICE_RE.search(text)
                 if m:
                     price = int(m.group(1))
