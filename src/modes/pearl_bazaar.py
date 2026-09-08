@@ -14,7 +14,7 @@ from db import _connect, wipe_pearl_bazaar_prices, save_pearl_bazaar_row
 from device import screenshot, tap, back
 from nav import navigate_to_mode, find_template, _t, TEMPLATES_DIR
 from ocr import ocr_image, block_center
-from modes.common import parse_rank_rows, scroll_scan, make_drill_in_hook
+from modes.common import parse_rank_rows, scroll_scan, make_drill_in_hook, make_verified_scroll_down
 
 PRICE_RE = re.compile(r"\b(\d{3})\b")
 CAP_RE = re.compile(r"Total\s*Daily\s*Selling\s*Cap\D*(\d+)", re.IGNORECASE)
@@ -167,7 +167,8 @@ def scan() -> str:
 
     counters = {"drilled": 0, "saved": 0}
     scroll_scan(_parse, "Pearl Bazaar",
-                on_stop=make_drill_in_hook(_make_row_capturer(counters)))
+                on_stop=make_drill_in_hook(_make_row_capturer(counters)),
+                scroll_fn=make_verified_scroll_down())
 
     print(f"PEARL_BAZAAR: drilled {counters['drilled']} rows, saved {counters['saved']}.")
     return "success"
