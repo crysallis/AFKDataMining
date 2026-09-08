@@ -677,23 +677,29 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
     row_callback is responsible for its own further taps/backs (e.g. Pearl
     icon -> price screen -> back) and must leave the screen back at the
     rank list before returning, matching this hook's own contract to
-    scroll_scan."""
+    scroll_scan.
+
+    Uses each entry's own 'y' (as returned by parse_rank_rows, already
+    podium-excluded via its list_y_min guard) directly as the tap anchor,
+    rather than re-deriving position by fuzzy-matching the entry's name
+    against OCR text on the frame. That re-derivation approach was tried
+    first and confirmed BROKEN live 2026-09-08: the podium header (top-3
+    hero cards) is pinned on screen and never scrolls out of frame, so its
+    warband-tag/name text blocks are present on every single stop -- a
+    fuzzy match against a low rank's name (itself sometimes wrongly parsed
+    as a warband tag by parse_rank_rows -- a separate, pre-existing bug in
+    that parser, not fixed here) could land on the podium's copy of that
+    text instead of the real list row, silently tapping the same wrong
+    profile for every affected rank. Trusting the parser's own y (which is
+    guaranteed row-accurate, unlike the derived-from-name lookup here)
+    sidesteps the whole class of problem."""
     tapped_ranks: set[int] = set()
 
     def on_stop(stop_img, stop_frame_entries: list[dict]) -> None:
         for entry in stop_frame_entries:
             rank = entry.get('rank')
-            if rank is None or rank in tapped_ranks:
-                continue
-
-            row_y = None
-            for box, text, _conf in ocr_image(stop_img):
-                cx, cy = block_center(box)
-                if SequenceMatcher(None, text.strip().lower(), entry.get('name', '').lower()).ratio() >= 0.88:
-                    row_y = cy
-                    break
-            if row_y is None:
-                print(f"  rank {rank}: row not found on this frame, will retry on a later stop.")
+            row_y = entry.get('y')
+            if rank is None or rank in tapped_ranks or row_y is None:
                 continue
             tapped_ranks.add(rank)
 
