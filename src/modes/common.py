@@ -680,26 +680,66 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
     scroll_scan.
 
     Uses each entry's own 'y' (as returned by parse_rank_rows, already
-    podium-excluded via its list_y_min guard) directly as the tap anchor,
-    rather than re-deriving position by fuzzy-matching the entry's name
-    against OCR text on the frame. That re-derivation approach was tried
-    first and confirmed BROKEN live 2026-09-08: the podium header (top-3
-    hero cards) is pinned on screen and never scrolls out of frame, so its
-    warband-tag/name text blocks are present on every single stop -- a
-    fuzzy match against a low rank's name (itself sometimes wrongly parsed
-    as a warband tag by parse_rank_rows -- a separate, pre-existing bug in
-    that parser, not fixed here) could land on the podium's copy of that
-    text instead of the real list row, silently tapping the same wrong
-    profile for every affected rank. Trusting the parser's own y (which is
-    guaranteed row-accurate, unlike the derived-from-name lookup here)
-    sidesteps the whole class of problem."""
+    podium-excluded via its list_y_min guard) only for the FIRST tap of a
+    stop. That re-derivation approach was tried first and confirmed BROKEN
+    live 2026-09-08: the podium header (top-3 hero cards) is pinned on
+    screen and never scrolls out of frame, so its warband-tag/name text
+    blocks are present on every single stop -- a fuzzy match against a low
+    rank's name (itself sometimes wrongly parsed as a warband tag by
+    parse_rank_rows -- a separate, pre-existing bug in that parser, not
+    fixed here) could land on the podium's copy of that text instead of the
+    real list row, silently tapping the same wrong profile for every
+    affected rank. Trusting the parser's own y instead of a name-based
+    lookup sidesteps that whole class of problem.
+
+    But 'y' still goes stale mid-stop for every row after the first: this
+    game's rank list snaps back up a bit whenever you back out of a row
+    drilled in deep enough down the list -- confirmed live 2026-09-08
+    against Pearl Bazaar and other ranking modes alike, not something a
+    single wait can settle out of. A stop with multiple new rows (common at
+    frames_per_stop=2) would tap the 2nd+ rows at coordinates that no
+    longer match their real on-screen position once the 1st row's drill-in
+    has run, producing exactly the corruption seen live: rank 24's DB row
+    carrying rank 7's real price because the tap for "rank 24" landed on
+    row 7's now-shifted card. Fixed by re-scanning the rank column fresh
+    (_scan_rank_column) after every row_callback returns, using that live
+    reading -- not the original stop's stale batch -- to find each
+    subsequent row's real y. A rank that can't be found on the current
+    screen (scrolled off after the snap-back) is skipped, not guessed at.
+
+    Re-scanning with _scan_rank_column alone isn't enough: unlike
+    parse_rank_rows, it has no podium exclusion or per-rank dedup of its
+    own (its only filter is y-proximity, not rank value) -- a decorative
+    top-1/2/3 badge sharing a rank number with a real list row further down
+    would silently overwrite it in a naive {rank: y} dict. _rescan_ranks
+    below reapplies both: a podium floor derived from the lowest y already
+    known-good in this stop (parse_rank_rows already excluded the podium
+    from every 'y' it handed us), and keep-topmost dedup, matching
+    parse_rank_rows's own approach line for line."""
     tapped_ranks: set[int] = set()
 
+    def _rescan_ranks(img, floor_y: int) -> dict[int, int]:
+        by_rank: dict[int, int] = {}
+        for sy, rv in sorted(_scan_rank_column(img, y_min=0)):
+            if sy < floor_y:
+                continue
+            if rv not in by_rank:
+                by_rank[rv] = sy
+        return by_rank
+
     def on_stop(stop_img, stop_frame_entries: list[dict]) -> None:
-        for entry in stop_frame_entries:
-            rank = entry.get('rank')
-            row_y = entry.get('y')
-            if rank is None or rank in tapped_ranks or row_y is None:
+        live_ranks = {entry['rank']: entry['y'] for entry in stop_frame_entries
+                     if entry.get('rank') is not None and entry.get('y') is not None}
+        pending = sorted(r for r in live_ranks if r not in tapped_ranks)
+        if not pending:
+            return
+        floor_y = min(live_ranks.values()) - 40
+
+        for rank in pending:
+            if rank in tapped_ranks:
+                continue
+            row_y = live_ranks.get(rank)
+            if row_y is None:
                 continue
             tapped_ranks.add(rank)
 
@@ -709,5 +749,7 @@ def make_drill_in_hook(row_callback, avatar_x: int = RANK_CARD_AVATAR_X,
             mark_progress()  # real device work happened regardless of outcome
 
             row_callback(rank, user_id)
+
+            live_ranks = _rescan_ranks(screenshot(), floor_y)
 
     return on_stop
