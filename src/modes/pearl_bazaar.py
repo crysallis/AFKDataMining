@@ -1,10 +1,11 @@
 """Pearl Bazaar drill-in scan. Walks the (unfiltered) Supreme Arena rankings
-list, ranks 1-100, and for every row taps into that player's profile to
-check for the Pearl Bazaar icon. Where present, captures today's selling
-price and remaining daily selling cap. No guild filter -- most of the top
-100 are other guilds' members. Only the latest run's data has any value
-(remaining cap changes minute to minute), so the table is wiped at the
-START of this scan, not the end."""
+list, ranks 1-75 by default (the full list runs to ~500, but only the top
+~60-70 have any real value -- see scan()'s max_rank), and for every row taps
+into that player's profile to check for the Pearl Bazaar icon. Where
+present, captures today's selling price and remaining daily selling cap. No
+guild filter -- most of the top ranks are other guilds' members. Only the
+latest run's data has any value (remaining cap changes minute to minute),
+so the table is wiped at the START of this scan, not the end."""
 import re
 import time
 
@@ -90,8 +91,14 @@ def _rank_rows_in_band(img) -> list[tuple[int, int]]:
     "tested: 1/20 via OCR"). Without this, a scan whose first target is
     rank 1 climbs forever looking for a rank that OCR will essentially
     never produce -- confirmed live 2026-09-08, the actual cause of a
-    runaway scroll that walked the entire list searching for it."""
-    hits = [(sy, rv) for sy, rv in _scan_rank_column(img) if ROW_TAP_Y_MIN <= sy <= ROW_TAP_Y_MAX]
+    runaway scroll that walked the entire list searching for it. Filters
+    out rv < 1 -- no rankings list has a rank 0, but _scan_rank_column's
+    RANK_RE (digits only, no leading-zero guard) matches a literal "0", and
+    a stray zero-shaped glyph in the digit strip was confirmed live
+    2026-09-08 to become a tap target, landing on an already-tapped row and
+    writing a garbage rank-0 row to the DB."""
+    hits = [(sy, rv) for sy, rv in _scan_rank_column(img)
+           if rv >= 1 and ROW_TAP_Y_MIN <= sy <= ROW_TAP_Y_MAX]
     seen_ranks = {rv for _sy, rv in hits}
     for rv in (1, 2, 3):
         if rv in seen_ranks:
@@ -202,10 +209,13 @@ def _capture_pearl_bazaar_row(rank: int, user_id: int | None, counters: dict) ->
     print(f"PEARL_BAZAAR: rank {rank} (ID {user_id}) price {price}, {cap_remaining} left to sell.")
 
 
-def scan(max_rank: int = 100) -> str:
-    """max_rank caps how far down the rankings list this scan climbs --
-    production default 100 (the SA list's practical size). Lower values are
-    useful for a bounded manual test run without editing this function."""
+def scan(max_rank: int = 75) -> str:
+    """max_rank caps how far down the rankings list this scan climbs.
+    Default 75 matches the one range actually validated live 2026-09-08
+    (54 rows saved from 66 drilled across ranks 1-74 in ~49 minutes) --
+    the full SA rankings list runs to ~500, far more than needed (Daniel:
+    only ~10 of the top 60-70 have real value) and untested at that depth.
+    Lower values are useful for a bounded manual test run."""
     missing = [n for n in ("pearl_bazaar_icon", "pearl_bazaar_price_label") if not _t(n).exists()]
     if missing:
         print(f"PEARL_BAZAAR: missing template(s) {', '.join(missing)} -- "
