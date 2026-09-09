@@ -12,7 +12,7 @@ import cv2
 
 from db import _connect, wipe_pearl_bazaar_prices, save_pearl_bazaar_row
 from device import screenshot, tap, back, scroll_down, mark_progress
-from nav import navigate_to_mode, find_template, _t, TEMPLATES_DIR
+from nav import navigate_to_mode, find_template, find_template_all, _t, TEMPLATES_DIR
 from ocr import ocr_image, block_center
 from modes.common import (_scan_rank_column, read_user_id,
                           RANK_CARD_AVATAR_X, RANK_CARD_AVATAR_Y_OFFSET)
@@ -25,20 +25,26 @@ from modes.common import (_scan_rank_column, read_user_id,
 ROW_TAP_Y_MIN = 700
 ROW_TAP_Y_MAX = 1400
 
-# How many single-swipe scrolls to try per climb attempt before giving up on
-# ever finding the next target rank. Measured live 2026-09-08: ~4 ranks
-# gained per swipe, and a drill-in resets the list to roughly rank 4-8 --
-# so climbing back to rank 100 from there needs at most ~(100-4)/4 = 24
-# swipes. 30 gives headroom without risking a runaway climb past the end
-# of a shorter list on a bad reading.
+# How many single-swipe scrolls to try per climb attempt before giving up
+# and treating it as a stuck/broken state (never a burst: a burst of
+# scroll_down() calls was confirmed live 2026-09-08 to fling the list ~27
+# ranks past everything in between, the same over-scroll pattern already
+# documented for Arcane Lab). Measured live: ~4 ranks gained per swipe, and
+# a drill-in resets the list to roughly rank 4-8 -- worst case within a
+# ~70-row scan needs ~(70-4)/4 = 17 swipes, so 30 gives real headroom.
 MAX_CLIMB_SWIPES = 30
 
-# End the whole scan once this many consecutive climbs fail to reach a new
-# highest rank at all -- distinguishes "reached the real end of the list"
-# from "stuck mid-climb", which MAX_CLIMB_SWIPES alone can't do since a
-# slow-but-working climb and a genuinely-ended list both eventually stop
-# producing progress within one climb's swipe budget.
-MAX_CONSECUTIVE_CLIMB_FAILURES = 2
+# Hard ceiling on total swipes across the WHOLE scan, independent of any
+# per-climb budget -- confirmed live 2026-09-08 a bug in an earlier version
+# of this loop (fixed, see git history) walked the list repeatedly without
+# this guard, reaching "rank 275" on a scroll before being killed manually.
+# Sized for a real ~70-row scan (70 * ~17 swipes/climb =~ 1200 worst case
+# would be too generous here -- if a run needs anywhere near that many
+# swipes something is already wrong, and letting it run ~70 minutes before
+# tripping defeats the point of having a ceiling at all. 400 covers a
+# genuinely working scan through rank ~70 with real slack, while still
+# aborting a broken run in ~18 minutes instead of over an hour.
+MAX_TOTAL_SWIPES = 400
 
 PRICE_RE = re.compile(r"\b(\d{3})\b")
 CAP_RE = re.compile(r"Total\s*Daily\s*Selling\s*Cap\D*(\d+)", re.IGNORECASE)
@@ -67,6 +73,31 @@ PRICE_CAP_REGION_Y_MAX = 1440
 # 20" at y=1341) keeps this to the one real price block.
 PRICE_Y_OFFSET_MIN = 50
 PRICE_Y_OFFSET_MAX = 160
+
+
+def _rank_rows_in_band(img) -> list[tuple[int, int]]:
+    """(y, rank) pairs from _scan_rank_column, restricted to the safe tap
+    band, PLUS a template-match fallback for ranks 1-3's ornate badges --
+    same fallback parse_rank_rows itself uses (common.py:154-167), needed
+    here because _scan_rank_column's plain digit-strip OCR misses rank 1's
+    gold crown glyph almost every time (parse_rank_rows's own comment:
+    "tested: 1/20 via OCR"). Without this, a scan whose first target is
+    rank 1 climbs forever looking for a rank that OCR will essentially
+    never produce -- confirmed live 2026-09-08, the actual cause of a
+    runaway scroll that walked the entire list searching for it."""
+    hits = [(sy, rv) for sy, rv in _scan_rank_column(img) if ROW_TAP_Y_MIN <= sy <= ROW_TAP_Y_MAX]
+    seen_ranks = {rv for _sy, rv in hits}
+    for rv in (1, 2, 3):
+        if rv in seen_ranks:
+            continue
+        tmpl = TEMPLATES_DIR / f"rank_{rv}_badge.png"
+        if not tmpl.exists():
+            continue
+        for _cx, cy in find_template_all(img, tmpl, threshold=0.75):
+            if ROW_TAP_Y_MIN <= cy <= ROW_TAP_Y_MAX:
+                hits.append((cy, rv))
+                break
+    return hits
 
 
 def _capture_pearl_bazaar_row(rank: int, user_id: int | None, counters: dict) -> None:
@@ -191,73 +222,88 @@ def scan(max_rank: int = 100) -> str:
 
     counters = {"drilled": 0, "saved": 0}
     tapped_ranks: set[int] = set()
-    next_rank = 1  # the frontier -- always target this specific rank next,
-                   # never "whatever's lowest and untapped", so a rank that's
-                   # permanently out of the safe tap band (clipped top/bottom
-                   # row) gets skipped forward past instead of silently
-                   # blocking every later rank from ever being targeted
-    consecutive_climb_failures = 0
+    total_swipes = 0
+    highest_tapped = 0
 
-    while next_rank <= max_rank and consecutive_climb_failures < MAX_CONSECUTIVE_CLIMB_FAILURES:
+    while highest_tapped < max_rank and total_swipes < MAX_TOTAL_SWIPES:
+        # Target the LOWEST untapped rank currently visible in the safe tap
+        # band -- not a specific frontier number. This is self-healing
+        # against any one rank that's permanently unreadable (rank 1's gold
+        # crown glyph, or a row clipped at a card boundary): if that rank
+        # never resolves, the next-lowest untapped rank is simply tapped
+        # instead, rather than the whole scan getting stuck hunting for one
+        # specific number that may never appear. An earlier version of this
+        # loop targeted a fixed "next expected rank" and got stuck exactly
+        # this way live 2026-09-08 -- confirmed rank 1's crown glyph is
+        # essentially unreadable via plain OCR, so the climb walked the
+        # entire ~500-row list searching for a rank number that (without
+        # the badge-template fallback _rank_rows_in_band now includes)
+        # would never show up, reaching "rank 275" before being killed.
+        target_rank = None
         target_y = None
-        for sy, rv in _scan_rank_column(screenshot()):
-            if rv == next_rank and ROW_TAP_Y_MIN <= sy <= ROW_TAP_Y_MAX:
-                target_y = sy
+        for sy, rv in sorted(_rank_rows_in_band(screenshot())):
+            if rv not in tapped_ranks:
+                target_rank, target_y = rv, sy
                 break
 
-        if target_y is None:
-            # next_rank isn't visible (or is visible but clipped out of the
-            # safe tap band) -- climb via single verified swipes (never a
-            # burst: a burst of scroll_down() calls was confirmed live
-            # 2026-09-08 to fling the list ~27 ranks past everything in
-            # between, the same over-scroll pattern documented for Arcane
-            # Lab) until next_rank appears in-band or the climb budget runs
-            # out. If the climb passes next_rank's y entirely (visible
-            # on-screen but never in-band, or misread), give up on that
-            # specific rank and move the frontier forward rather than
-            # looping on it forever.
+        if target_rank is None:
+            # Nothing untapped visible -- climb via single verified swipes
+            # (never a burst: confirmed live 2026-09-08 a burst of
+            # scroll_down() calls flings the list ~27 ranks past everything
+            # in between, the same over-scroll pattern already documented
+            # for Arcane Lab) until something new appears or the climb
+            # budget runs out.
             found_during_climb = False
-            highest_seen = next_rank
             for _swipe in range(MAX_CLIMB_SWIPES):
+                if total_swipes >= MAX_TOTAL_SWIPES:
+                    break
                 scroll_down()
+                total_swipes += 1
                 time.sleep(1.2)
                 mark_progress()  # real device work, keep the watchdog quiet
-                current = _scan_rank_column(screenshot())
-                for sy, rv in current:
-                    if rv > highest_seen:
-                        highest_seen = rv
-                    if rv == next_rank and ROW_TAP_Y_MIN <= sy <= ROW_TAP_Y_MAX:
-                        target_y = sy
+                for sy, rv in sorted(_rank_rows_in_band(screenshot())):
+                    if rv not in tapped_ranks:
+                        target_rank, target_y = rv, sy
                         found_during_climb = True
+                        break
                 if found_during_climb:
                     break
 
             if not found_during_climb:
-                if highest_seen > next_rank:
-                    # The list moved past next_rank without ever showing it
-                    # in a tappable position (e.g. permanently clipped at a
-                    # card boundary) -- skip it, matching every other mode's
-                    # skip-and-continue policy on a single bad row.
-                    print(f"PEARL_BAZAAR: rank {next_rank} never reachable in the "
-                          f"tap band, skipping.")
-                    next_rank += 1
-                    continue
-                consecutive_climb_failures += 1
-                print(f"PEARL_BAZAAR: climb exhausted ({MAX_CLIMB_SWIPES} swipes) looking "
-                      f"for rank {next_rank} ({consecutive_climb_failures}/"
-                      f"{MAX_CONSECUTIVE_CLIMB_FAILURES}) -- likely end of list.")
-                continue
+                # Climb exhausted without finding anything new -- could be
+                # the genuine end of the list, or the scan got stranded
+                # somewhere unrecognizable. Re-navigate (a fresh, reliable
+                # reset to the top of the list -- never scroll_to_top() or
+                # scroll_up() here, both confirmed unsafe on ranking lists,
+                # see gotcha-arcane-lab-list-collapses-on-overscroll) rather
+                # than continuing to scroll_down() blindly from an unknown
+                # position; if even that produces nothing new, the list has
+                # genuinely been fully covered and the scan ends.
+                print(f"PEARL_BAZAAR: climb exhausted ({MAX_CLIMB_SWIPES} swipes) with no "
+                      f"new rank found (highest tapped so far: {highest_tapped}), "
+                      f"re-navigating to recover.")
+                try:
+                    navigate_to_mode("supreme_arena")
+                except RuntimeError:
+                    pass
+                for sy, rv in sorted(_rank_rows_in_band(screenshot())):
+                    if rv not in tapped_ranks:
+                        target_rank, target_y = rv, sy
+                        break
+                if target_rank is None:
+                    print("PEARL_BAZAAR: nothing new after re-navigating either -- "
+                          "ending scan.")
+                    break
 
-        consecutive_climb_failures = 0
-        tapped_ranks.add(next_rank)
+        tapped_ranks.add(target_rank)
+        highest_tapped = max(highest_tapped, target_rank)
 
         tap(RANK_CARD_AVATAR_X, target_y + RANK_CARD_AVATAR_Y_OFFSET)
         time.sleep(1.5)
         user_id = read_user_id(screenshot())
         mark_progress()
 
-        _capture_pearl_bazaar_row(next_rank, user_id, counters)
-        next_rank += 1
+        _capture_pearl_bazaar_row(target_rank, user_id, counters)
 
     print(f"PEARL_BAZAAR: drilled {counters['drilled']} rows, saved {counters['saved']}.")
     return "success"
