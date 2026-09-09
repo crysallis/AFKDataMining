@@ -46,6 +46,12 @@ MAX_CLIMB_SWIPES = 30
 # aborting a broken run in ~18 minutes instead of over an hour.
 MAX_TOTAL_SWIPES = 400
 
+# How many times the scan will re-navigate to recover from a climb that
+# found nothing new. Bounds the recovery path independently of
+# MAX_TOTAL_SWIPES (a slow re-navigation costs no swipes at all, so the
+# swipe ceiling alone can't stop repeated recoveries from looping).
+MAX_RECOVERY_ATTEMPTS = 3
+
 PRICE_RE = re.compile(r"\b(\d{3})\b")
 CAP_RE = re.compile(r"Total\s*Daily\s*Selling\s*Cap\D*(\d+)", re.IGNORECASE)
 
@@ -114,15 +120,24 @@ def _capture_pearl_bazaar_row(rank: int, user_id: int | None, counters: dict) ->
     counters["drilled"] += 1
 
     if user_id is None:
-        # Debug capture -- this path is ambiguous between "opened a real
-        # profile but OCR missed the ID text" (one back() is correct) and
-        # "the tap missed the row/banner entirely" (a back() here isn't
-        # undoing anything, and can cascade further up the nav stack than
-        # intended) -- confirmed live 2026-09-08 this happens and the scan
-        # goes completely dark afterward. Same debug_*.png convention as
-        # nav.py's own failure captures.
+        # This path is ambiguous between "opened a real profile but OCR
+        # missed the ID text" (one back() is correct, undoes the tap) and
+        # "the tap missed the row/banner entirely, still on the plain rank
+        # list" (a back() here isn't undoing anything real, and can cascade
+        # further up the nav stack than intended -- confirmed live
+        # 2026-09-08 via a debug screenshot taken at exactly this point:
+        # it showed the rank list itself, multiple rank numbers visible,
+        # not a profile -- proving the tap had missed and the back() that
+        # used to fire unconditionally here was taking an extra, unpaired
+        # step off the rankings screen). Decide from the screen rather than
+        # guessing: 2+ rank hits nearby means the list, not a profile.
+        current_img = screenshot()
+        still_on_list = len(_rank_rows_in_band(current_img)) >= 2
+        if still_on_list:
+            print(f"PEARL_BAZAAR: rank {rank} tap missed (still on rank list), skipping.")
+            return
         cv2.imwrite(str(TEMPLATES_DIR.parent / f"debug_pearl_bazaar_no_id_rank{rank}.png"),
-                    screenshot())
+                    current_img)
         print(f"PEARL_BAZAAR: rank {rank} User ID not read, skipping.")
         back()
         time.sleep(1.0)
@@ -224,6 +239,7 @@ def scan(max_rank: int = 100) -> str:
     tapped_ranks: set[int] = set()
     total_swipes = 0
     highest_tapped = 0
+    recovery_attempts = 0
 
     while highest_tapped < max_rank and total_swipes < MAX_TOTAL_SWIPES:
         # Target the LOWEST untapped rank currently visible in the safe tap
@@ -275,26 +291,36 @@ def scan(max_rank: int = 100) -> str:
                 # somewhere unrecognizable. Re-navigate (a fresh, reliable
                 # reset to the top of the list -- never scroll_to_top() or
                 # scroll_up() here, both confirmed unsafe on ranking lists,
-                # see gotcha-arcane-lab-list-collapses-on-overscroll) rather
-                # than continuing to scroll_down() blindly from an unknown
-                # position; if even that produces nothing new, the list has
-                # genuinely been fully covered and the scan ends.
+                # see gotcha-arcane-lab-list-collapses-on-overscroll) and
+                # let the outer loop's normal selection-then-climb logic
+                # run again from the top, rather than checking only the
+                # single top-of-list frame here and giving up -- confirmed
+                # live 2026-09-08 that a single-frame check after re-nav
+                # ended the scan at rank 18 even though rank 10 (skipped
+                # earlier when its tap failed to read a User ID) was still
+                # untapped and reachable with two more swipes.
+                # recovery_attempts (not consecutive_climb_failures) is what
+                # eventually ends the scan, so repeated re-navigations still
+                # can't loop forever: MAX_TOTAL_SWIPES bounds the climbs
+                # inside each attempt, and this counts the attempts
+                # themselves.
+                recovery_attempts += 1
+                if recovery_attempts > MAX_RECOVERY_ATTEMPTS:
+                    print(f"PEARL_BAZAAR: climb exhausted ({MAX_CLIMB_SWIPES} swipes) with no "
+                          f"new rank found after {MAX_RECOVERY_ATTEMPTS} re-navigation "
+                          f"attempts (highest tapped: {highest_tapped}) -- ending scan.")
+                    break
                 print(f"PEARL_BAZAAR: climb exhausted ({MAX_CLIMB_SWIPES} swipes) with no "
                       f"new rank found (highest tapped so far: {highest_tapped}), "
-                      f"re-navigating to recover.")
+                      f"re-navigating to recover (attempt {recovery_attempts}/"
+                      f"{MAX_RECOVERY_ATTEMPTS}).")
                 try:
                     navigate_to_mode("supreme_arena")
                 except RuntimeError:
                     pass
-                for sy, rv in sorted(_rank_rows_in_band(screenshot())):
-                    if rv not in tapped_ranks:
-                        target_rank, target_y = rv, sy
-                        break
-                if target_rank is None:
-                    print("PEARL_BAZAAR: nothing new after re-navigating either -- "
-                          "ending scan.")
-                    break
+                continue
 
+        recovery_attempts = 0
         tapped_ranks.add(target_rank)
         highest_tapped = max(highest_tapped, target_rank)
 
