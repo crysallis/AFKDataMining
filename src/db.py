@@ -80,7 +80,8 @@ def init_db() -> None:
                 activeness          INTEGER NOT NULL,
                 warband             TEXT NOT NULL DEFAULT '',
                 warband_id          INTEGER REFERENCES warbands(id),
-                title               TEXT NOT NULL DEFAULT ''
+                title               TEXT NOT NULL DEFAULT '',
+                season_id           INTEGER REFERENCES ally_seasons(id)
             );
 
             CREATE INDEX IF NOT EXISTS idx_ms_snapshot ON member_snapshots(snapshot_id);
