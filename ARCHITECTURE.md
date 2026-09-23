@@ -266,6 +266,11 @@ members             One row per player (canonical roster). discord_id links to D
                     active = present in latest scan. pending = 1 when a read could not be
                     confidently matched to an existing member (awaiting bot /review).
 member_snapshots    One row per member per snapshot. Stats incl. warband (text) + warband_id.
+                    season_id (nullable, FK -> ally_seasons.id, added 2026-09-23) stamped from
+                    whichever ally_seasons row is active() at save_snapshot() write time. Every
+                    pre-existing row was backfilled flat to season_id=1 -- NOT inferred per
+                    historical scan date, so the earliest season-1-tagged row is the oldest scan
+                    in the whole DB, not a real season-1 start date.
 warbands            Canonical warband list (id, name UNIQUE, sort_order, archived).
                     members.warband_id = current warband; member_snapshots.warband_id = per-scan.
 name_corrections    Maps OCR'd names to canonical names. Persists across scans.
