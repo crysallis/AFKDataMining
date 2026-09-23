@@ -285,6 +285,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
     pending_names = pending_names or set()
 
     with _connect() as conn:
+        season_id = _active_season_id(conn)
         for m in members:
             m.warband, m.warband_id = _resolve_warband(conn, m.warband)
 
@@ -321,7 +322,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         """UPDATE member_snapshots
                            SET name = ?, last_active = ?, last_seen_approx = ?,
                                combat_power = ?, combat_power_value = ?, activeness = ?,
-                               warband = ?, warband_id = ?, title = ?
+                               warband = ?, warband_id = ?, title = ?, season_id = ?
                            WHERE snapshot_id = ? AND member_id = ?""",
                         (
                             m.name,
@@ -332,6 +333,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             m.warband,
                             m.warband_id,
                             m.title,
+                            season_id,
                             snapshot_id,
                             member_id,
                         ),
@@ -340,8 +342,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                     conn.execute(
                         """INSERT INTO member_snapshots
                            (snapshot_id, member_id, name, last_active, last_seen_approx,
-                            combat_power, combat_power_value, activeness, warband, warband_id, title)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                            combat_power, combat_power_value, activeness, warband, warband_id, title, season_id)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         (
                             snapshot_id,
                             member_id,
@@ -353,6 +355,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                             m.warband,
                             m.warband_id,
                             m.title,
+                            season_id,
                         ),
                     )
         else:
@@ -364,8 +367,8 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
             conn.executemany(
                 """INSERT INTO member_snapshots
                    (snapshot_id, member_id, name, last_active, last_seen_approx,
-                    combat_power, combat_power_value, activeness, warband, warband_id, title)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    combat_power, combat_power_value, activeness, warband, warband_id, title, season_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [
                     (
                         snapshot_id,
@@ -378,6 +381,7 @@ def save_snapshot(members: list[Member], pending_names: set[str] | None = None) 
                         m.warband,
                         m.warband_id,
                         m.title,
+                        season_id,
                     )
                     for m, member_id in zip(members, member_ids)
                 ],
