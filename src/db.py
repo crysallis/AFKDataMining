@@ -987,6 +987,19 @@ def get_guild_duel_period(force: bool = False) -> str | None:
     return period
 
 
+def get_guild_duel_missing(period: str) -> list[str]:
+    """Active, non-pending members with no guild_duel_rankings row for this
+    period · covers rows saved by the scan and any added by hand."""
+    with _connect() as conn:
+        return [r["ingame_name"] for r in conn.execute(
+            """SELECT m.ingame_name FROM members m
+               WHERE m.active = 1 AND m.pending = 0
+                 AND NOT EXISTS (SELECT 1 FROM guild_duel_rankings g
+                                 WHERE g.member_id = m.id AND g.period_start = ?)
+               ORDER BY m.ingame_name COLLATE NOCASE""",
+            (period,)).fetchall()]
+
+
 def get_supreme_period() -> str | None:
     """Returns the period_start to scan for, or None to skip the LIVE scan.
 

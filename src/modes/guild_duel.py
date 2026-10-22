@@ -11,7 +11,7 @@ unrecoverable rather than engineered around."""
 import logging
 from difflib import SequenceMatcher
 
-from db import init_db, get_guild_duel_period, save_guild_duel
+from db import init_db, get_guild_duel_period, get_guild_duel_missing, save_guild_duel
 from device import guild_duel_scroll_down
 from nav import navigate_to_guild_duel_battle_report
 from modes.common import parse_rank_rows, scroll_scan, resolve_entries
@@ -64,4 +64,8 @@ def scan(force: bool = False) -> None:
     rows = resolve_entries(entries, "Guild Duel")
     saved = save_guild_duel(rows, period)
     print(f"GUILD_DUEL: saved {saved} entries for period {period}.")
+    missing = get_guild_duel_missing(period)
+    if missing:
+        print(f"GUILD_DUEL: missing {len(missing)} active member(s): {', '.join(missing)} "
+              f"· add by hand with: python src/add_guild_duel.py \"<name>\" <rank> <crests>")
     return "success"

@@ -72,7 +72,9 @@ sign-ups close it lands on the deployment map instead, which the scan detects
 (via the "Deploy" button) and skips cleanly. `--guild-duel` scans the Guild
 Duel "Total Crest Rankings" screen, which — unlike every other mode — mixes
 both guilds in the same list with no in-game filter; each row's own guild tag
-is checked instead, and only "RKF RiffRaff" rows are kept. Results go to
+is checked instead, and only "RKF RiffRaff" rows are kept. After the scan it
+lists any active members it missed; add them with `python src/add_guild_duel.py
+"<name>" <rank> <crests>`. Results go to
 per-mode tables in `guild.db` and feed the bot's `/member` (rankings) or
 `/clashfronts` (sign-ups) commands. See `ARCHITECTURE.md` for the voting and
 rank-reading details.

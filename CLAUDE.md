@@ -38,6 +38,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
 | `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name · `scroll_scan()`'s `on_stop` hook + `make_id_fallback_hook()` (see ID-Assisted Name Resolution) |
 | `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote · all but `guild_duel.py` wired to `make_id_fallback_hook()` |
+| `src/add_guild_duel.py` | CLI to add/correct one Guild Duel row by hand, or `--missing` to list active members the scan didn't capture · same logic as the bot's `/guildduel` |
 | `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
 | `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite · detects and skips the post-signup deployment map |
 | `src/templates/` | OpenCV template images · must be captured via ADB |
@@ -178,7 +179,12 @@ succeeding.
 
 ## Dead Ends · Do Not Pursue
 
-- **Qwen2-VL** · requires CUDA (NVIDIA) or MPS (Apple). AMD RX 9070 XT has neither · do not investigate. AdbAutoPlayer's installed app also cannot run it on this hardware (falls back to same RapidOCR we already use).
+- **Qwen2-VL via CUDA/MPS** · superseded 2026-09-23, see below. The CUDA-or-MPS-only framing was true when written but AMD shipped a native ROCm-on-Windows preview (7.2.1, RDNA4-supported) since then.
+- **Qwen2-VL via ROCm (tested 2026-09-23, do not pursue further right now — but see caveat)** · installed torch 2.9.1+rocm7.2.1 in an isolated venv (Python 3.12 via `uv`, deleted after testing) — real GPU compute confirmed (fp16 matmul executes, `torch.version.hip` populated, RX 9070 XT correctly reports 15.9GB VRAM), and AdbAutoPlayer's actual `has_sufficient_vram()` gate logic returns True on this hardware. ROCm-on-Windows itself is not the problem — it works.
+  **Caveat on the test itself:** what was actually tested (a single Qwen2-VL call asked to transcribe every row on a full activeness screen) is a *harder, broader* task than what AdbAutoPlayer's changelog describes using it for — a supplemental pass to catch specifically the Hangul/Cyrillic names their own PP-OCRv5 detects zero data for, not a wholesale replacement pass. Their choice to use Qwen2-VL isn't undermined by this test; the test wasn't a faithful reproduction of their actual call pattern. Result: transcribed a Cyrillic name RapidOCR mangled into pure garbage (`БоссМразей` → RapidOCR's `EoccMpa3ei` vs Qwen's `BossМразей`, partially right) but **silently dropped one of 4 rows** despite an explicit "include ALL rows" instruction, and took **41.7s per call** (cold model, one screen crop). VRAM usage was fine (4.3GB peak).
+  The 41.7s figure also isn't automatically disqualifying the way it reads in isolation — AdbAutoPlayer is a semi-autonomous farming bot that already spends minutes per screen on template matching/swipes, so tens of seconds for a name it'd otherwise get zero data for is a different cost-benefit than the same latency added to our `/scan` slash command, which a person is actively watching.
+  Separately: tried to get the real AdbAutoPlayer.exe install (`C:\Users\crysa\AppData\Local\AdbAutoPlayer`) to use ROCm torch instead of its default CUDA-only path, to benchmark their actual app rather than a standalone script. Blocked — `_torch_metadata()` in `_guild_scan_setup.py` checks `"+cu" in version_string` to decide if a satisfactory torch is already installed; a ROCm build's version string (`+rocm7.2.1`) never matches, so `_ensure_qwen2vl_packages()` (called at the start of every guild scan) always decides it needs to reinstall CUDA torch over whatever's in the extras folder, undoing a manual ROCm seed every run. Fixing this means patching their app, which we chose not to do.
+  Net: our OCR pipeline is a different shape than theirs (we need one clean pass over a whole paginated list per `/scan`, not a background farming loop that can afford per-name retries), so this isn't a fair apples-to-apples "should we switch" call yet. Worth a real revisit if: (a) a properly-scoped test — Qwen2-VL called only on rows RapidOCR already flagged as low-confidence/undetected, matching their actual usage — still shows good accuracy, or (b) AdbAutoPlayer's project adds ROCm-awareness to `_torch_metadata()` so their app can be benchmarked directly on this hardware.
 - **AdbAutoPlayer as a better OCR engine** · on this hardware they run PP-OCRv4 via rapidocr_onnxruntime, same family as ours. Their reliability advantage is **consensus voting** (collect all frames, vote per rank) not the engine. Port the voting approach, not the engine.
 - **AdGuard: excluding `HD-Player.exe`** · unblocks BlueStacks ads but does NOT fix ADB throttling. Always exclude `C:\platform-tools\adb.exe` instead.
 
@@ -338,7 +344,10 @@ previous week's FINALIZED per-member crest totals — confirmed live to stay
 stable and correct for the entire following week (rolls over exactly at
 Monday 00:00 UTC, no lag).
 
-- Nav path: Battle Modes → Guild Duel card → lands on a "Preparation Phase"
+- Nav path: Battle Modes → "Guild Mode" tab (Battle Modes now opens on a
+  "Routines" tab; the tab label wraps, OCR returns just the "Guild" fragment,
+  so that is tried first with the whole string as fallback · other modes stay
+  on Routines and are unaffected) → Guild Duel card → lands on a "Preparation Phase"
   team-matchup tab by default (no Battle Report button there) → OCR-tap the
   "Elite Duelers" bottom-nav tab → OCR-tap "Battle Report" (top-right).
   `navigate_to_guild_duel_battle_report()` (`nav.py`) drives this directly
@@ -384,6 +393,13 @@ Monday 00:00 UTC, no lag).
   absorb misfires/duplicate reads). `mark_progress()` now also fires on
   real scroll change (not just new kept rows), since a long other-guild
   stretch would otherwise starve the 300s game-progress watchdog.
+- Single pass only. After the save, `scan()` prints `GUILD_DUEL: missing N
+  active member(s): ...` (`get_guild_duel_missing(period)` in `db.py`: active,
+  non-pending members with no row for the period, counting hand-added rows) ·
+  the bot's `/scan` reply forwards any `GUILD_DUEL:` line. No automatic second
+  pass: the sticky viewer row is unrecoverable, so a retry could never close
+  that gap. Fill gaps with `python src/add_guild_duel.py "<name>" <rank> <crests>`
+  (`--missing` lists, `--period` overrides) or the bot's `/guildduel add`.
 - `--force-rescan` CLI flag (`scraper.py`) bypasses `get_guild_duel_period`'s
   already-saved-this-week gate for a manual re-scan; `save_guild_duel` is
   `INSERT OR REPLACE` on `(member_id, period_start)` so re-saving overwrites

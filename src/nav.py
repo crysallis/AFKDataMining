@@ -565,7 +565,8 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
 def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
     """Navigate from any screen to the Guild Duel 'Battle Report' popup.
 
-    Route: overview -> battle_modes_btn -> OCR 'Guild Duel' card -> lands on
+    Route: overview -> battle_modes_btn -> OCR-tap 'Guild Mode' tab (Battle
+    Modes defaults to 'Routines') -> OCR 'Guild Duel' card -> lands on
     the 'Preparation Phase' tab (the default landing tab, a team-matchup
     screen with no Battle Report button) -> OCR-tap the 'Elite Duelers'
     bottom-nav tab -> OCR-tap 'Battle Report' (top-right button, found by
@@ -591,6 +592,15 @@ def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
         ):
             logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
             continue
+
+        # Battle Modes now opens on a 'Routines' tab; Guild Duel lives under
+        # the 'Guild Mode' tab (label wraps to two lines; confirmed live that
+        # OCR returns just the 'Guild' fragment, so try it first).
+        if not (_ocr_tap_text(ocr_image, "Guild", "guild_duel:guild_mode_tab", attempts=3)
+                or _ocr_tap_text(ocr_image, "Guild Mode", "guild_duel:guild_mode_tab_whole", attempts=2)):
+            logging.warning("'Guild Mode' tab not found (flow attempt %d), re-homing.", attempt)
+            continue
+        _wait_until_stable()
 
         if not _ocr_tap_text(
             ocr_image, card_label, f"card:{card_label}",
