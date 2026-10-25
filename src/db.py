@@ -157,6 +157,8 @@ def init_db() -> None:
                 rank         INTEGER,
                 crests       INTEGER,
                 scanned_at   TEXT NOT NULL,
+                damage       INTEGER,
+                damage_scanned_at TEXT,
                 PRIMARY KEY (member_id, period_start)
             );
 
@@ -960,6 +962,20 @@ def guild_duel_period_key(now: datetime) -> str:
     most_recent_monday = (now - timedelta(days=days_since_monday)).date()
     period_start = most_recent_monday - timedelta(days=7)
     return period_start.isoformat()
+
+
+def guild_duel_damage_period_key(now: datetime) -> str:
+    """period_start for a weekend damage scan: the most recent Monday on or
+    before now · the same date guild_duel_period_key resolves to once the
+    Battle Report for that week is readable, so both scans land on one row."""
+    return (now - timedelta(days=now.weekday())).date().isoformat()
+
+
+def guild_duel_damage_window_open(now: datetime) -> bool:
+    """Damage is only readable live, Saturday through Sunday UTC. Monday 00:00
+    UTC resets the screen to the new week at zero, so a later scan must not
+    write."""
+    return now.weekday() in (5, 6)
 
 
 def get_guild_duel_period(force: bool = False) -> str | None:
