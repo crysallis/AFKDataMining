@@ -26,10 +26,13 @@ the scan READS the screen, not in the OCR engine:
    tag and damage pairs its damage with the bar's own tag as its "name".
 2. **The scan reads while the list is still scrolling.** After the swipe
    returns the list keeps moving about 3.4 s (measured: pixel change 26, 22,
-   14, 8, 3.2, 0.19 at 1.0, 1.5, 2.0, 2.4, 2.9, 3.4 s). The scan's two frames
-   per stop land at roughly 0.5 s and 2 s. Names still read correctly mid
-   motion in the test, so this is a timing defect, not a proven cause of the
-   misreads, but reading a moving screen is wrong on its face and cheap to fix.
+   14, 8, 3.2, 0.19 at 1.0, 1.5, 2.0, 2.4, 2.9, 3.4 s). After the swipe the
+   scan sleeps 1.2 s and takes a probe screenshot for its end-of-list check,
+   so a stop's first frame lands about 1.7 s after the swipe returns (still
+   moving) and the second, after about a second of OCR and a 0.4 s sleep,
+   about 3.3 s (nearly settled). Names still read correctly mid motion in the
+   test, so this is a timing defect, not a proven cause of the misreads, but
+   reading a moving screen is wrong on its face and cheap to fix.
 
 ## Goals
 
@@ -112,22 +115,37 @@ nothing extra is dropped; pinned top or bottom, rows under or beside the bar
 are dropped. The existing guild-tag check, `LIST_Y_MIN` and damage parsing stay
 as they are.
 
-The scan counts rows dropped by this filter and logs the total.
+The scan counts rows dropped by this filter and logs the total. It also
+checks itself at the end: when it saves fewer members than the previous scan
+saved for the same week, it prints a warning line (never fails the scan), since
+a row dropped as clipped that no other stop read in full would otherwise be
+silent.
 
 ### 2. Settle before reading (`modes/common.py` `scroll_scan`, opt-in)
 
 New optional argument (default off, so every existing mode is unchanged). When
-on, before the first frame at each stop the scan polls screenshots until two
-consecutive ones differ by less than about 0.5 in the list region (the idle
-baseline is 0.0, motion at 3.4 s was 0.19), polling roughly every 0.3 s, with a
-hard cap of about 6 s so a stuck screen cannot hang the scan. The damage mode
-turns it on. Expected extra time is about 3.5 s per stop, at most roughly 4
-minutes over the 70-stop cap the scan reaches today.
+on, the settle poll REPLACES the fixed `sleep(1.2)` that follows each swipe: it
+polls screenshots until two consecutive ones differ by less than about 0.5 in
+the list region (idle baseline is 0.0, motion at 3.4 s was 0.19), roughly every
+0.3 s, and returns the settled screenshot, which the loop then uses as the
+`curr_img` for its existing end-of-list check. That check keeps its own
+whole-frame 1.5 threshold exactly as today; the two thresholds coexist because
+they answer different questions (did the list move at all, versus has it
+stopped). Hard cap about 6 s; if the cap is hit the scan reads anyway and logs
+a warning. The damage mode turns it on. Expected cost: about 3.4 s of settling
+replaces 1.2 s, so about 2.2 s more per stop, roughly 2.5 minutes over the
+70-stop cap the scan reaches today.
 
-My call: with settle on, use `frames_per_stop=1`. Two frames of a settled
-screen are the same image and OCR is deterministic, so the second read adds
-nothing but time; rows still appear in two or more stops, which keeps the vote
-redundancy that matters.
+With settle on, use `frames_per_stop=1`: two frames of a settled screen are the
+same image and OCR is deterministic, so a second read adds nothing but time.
+Honest tradeoff: with the row filter a row is fully clear over about 688 px of
+positions against a 560 px swipe, so most rows are read once or twice, not
+three times, and a single bad read has little to outvote it. Unmatched reads
+stay visible (never silently saved wrong, apart from the clipped-damage case
+the filter exists to remove), and the swipe distance becomes a named, tunable
+constant in `device.guild_duel_damage_scroll_down`; if the checkpoint scan
+still shows single-read errors, shortening the swipe (for example 560 to 450
+px) buys more overlap at the cost of more stops.
 
 ### 3. Keep the frame behind an unmatched read
 
@@ -145,21 +163,35 @@ line prints the file name beside the name and value.
 A step in `modes/guild_duel_damage.py`, run after `resolve_entries` and before
 saving. It never touches the shared voting or `RosterResolver`.
 
+It runs BEFORE `resolve_entries`, so a merged duplicate never reaches that
+function's `REVIEW_NAMES` line (the bot's `/scan` turns that line into the
+"Name review needed" warning). Flow: resolve the names once with `resolve_names`
+(the same resolver `resolve_entries` uses), find duplicates, remove them from
+the entry list, print the merge lines, then call `resolve_entries` on what is
+left. Resolving twice is harmless (`save_correction` is an idempotent upsert).
+
 For each entry that did NOT resolve to a member, look at the resolved entries
 with exactly the same damage value. Score the unresolved read against each of
 those members' canonical names with a normalized comparison (case-folded,
-look-alike letters folded such as Cyrillic н to h, accents stripped, a leading
-one or two characters allowed to be a misread tag glyph, non-letters ignored).
-Accept the merge only when the best score is at least about 0.5 AND beats the
-runner-up by a clear margin. On accept, the unresolved entry is dropped as a
+look-alike letters folded such as Cyrillic н to h and d to b, accents stripped,
+the read also tried as each space/bracket-separated token and with a leading
+one or two characters removed as a misread tag glyph, non-letters ignored). Do
+NOT fold l or 1 to i: that made `XIII'th` and `Lilith` look 0.91 alike.
+Accept the merge only when the best score is at least about 0.7 AND beats the
+runner-up by at least about 0.15. On accept, the unresolved entry is dropped as a
 duplicate of that member and one line is printed (`merged 'X' into 'Y' (same
 311B)`) so it is never silent. No member row is created or changed by a merge,
 and a merge never replaces the resolved entry's own value.
 
 Why the floor and margin: damage values are rounded to billions and collide.
-On 2026-10-25 `Araleth`, `XIII'th` and `Ramz78k` all showed 166B; `ψ Kamz/ok`
-must go to `Ramz78k` only because its name is closest, never because of the
-number alone. If nothing clears the bar the entry stays unmatched exactly as
+On 2026-10-25 `Araleth`, `XIII'th` and `Ramz78k` all showed 166B. Measured
+with the folding above: `UTNaizab` and `INaizaD` 1.00 against `NaizaB`,
+`TareAimei` 0.89 against `Tare_Ameli`, `EoccMpa3eñ` 0.84 against `БоссМразей`
+(all merge); `rarehiiici` 0.44, `ψ Kamz/ok` 0.67 against `Ramz78k` and
+`φJ Kailiz/ ok` at best 0.40 against `XIII'th` (all stay unmatched). A floor of
+0.5 would have merged `φJ Kailiz/ ok` into the WRONG member, which is why the
+floor is 0.7; those weak reads are exactly what the row filter should stop
+producing in the first place. If nothing clears the bar the entry stays unmatched exactly as
 today, which is the safe default (a person looks), and a genuinely new member
 who happens to tie a value is never absorbed without a similar name.
 
@@ -173,24 +205,34 @@ names correctly in testing (`Найхэ` 0.97, `БоссМразей` 0.95) and 
 names identically, but cannot read CJK and once scored 0.66 on a clean Latin
 name.
 
-For each kept row, re-read the name crop (text recognition only, no detection)
+The pass works on the OCR blocks BEFORE rows are paired (blocks inside the
+name x-range and the list window): a block whose crop re-reads as accepted
+Cyrillic gets its text replaced, keeping its box and confidence, so pairing,
+the row filter and everything after are unchanged. Re-reading a crop took 4 to
+90 ms in testing, so running it on every block in the name x-range (guild tags
+included) is cheap. For each such block, re-read the crop (text recognition only, no detection)
 with the Cyrillic recognizer, lazily initialised so nothing else pays for it
 (an additive getter next to the existing engines in `ocr.py`). Replace the
 row's name only when the result is mostly Cyrillic letters (about 60 percent or
 more of its letters in U+0400 to U+04FF) AND its confidence is at least about
-0.9. Anything else keeps the production read. It must never override on
+0.8 (measured on name crops: `Найхэ` 0.87, `БоссМразей` 0.95; 0.9 would have
+rejected the first). Anything else keeps the production read. It must never override on
 confidence alone and never touch a CJK name, since a CJK crop will not come
 back mostly Cyrillic.
 
 One shared change, deliberately tiny: add the Cyrillic range to `db.py`
 `_NAME_CHAR_RE` so a decorated Cyrillic read (tag glyph plus name) reduces to a
 real name core instead of an empty one. Today Cyrillic letters are stripped, so
-those reads skip the decoration-stripping tier. Covered by a unit test and it
-only affects reads containing Cyrillic.
+those reads skip the decoration-stripping tier. It also feeds
+`_normalized_roster`, which indexes roster names: the two Cyrillic members
+(`Найхэ`, `БоссМразей`) currently have an empty core and are left out of that
+index, and after the change they join it for every mode that uses
+`RosterResolver`. Accepted as low risk with two such members, and covered by a
+regression test over the resolver (Cyrillic names resolve exact and decorated,
+every existing Latin and CJK roster name still resolves to itself), not just a
+test of the regex.
 
-Cost to measure and report: extra seconds per stop. Run it on every kept row to
-start; narrowing it (only low confidence or unresolved reads) is the first
-optimization if the cost is noticeable.
+Cost to measure and report: extra seconds per stop (expected small, see above).
 
 ## Verification
 
@@ -203,7 +245,8 @@ optimization if the cost is noticeable.
 - Replay: the lab (`ocr_lab/`) runs the filter on the saved frames
   (`frame_00` to `frame_08`) and shows that `Tare_Ameli` half-cut is dropped
   while `Matikhv`, `Eudemonios`, `Hira`, rank 1-4 and the own row are kept.
-  Frames contain member names and stay out of the repo.
+  Frames contain member names, so they live in `ocr_lab/data/frames/`, which is
+  git-ignored; the lab scripts themselves (`ocr_lab/*.py`) are committed.
 - Live: run a full damage scan. Expect zero duplicates of the kinds seen
   (no `TareAimei`-style fragments), matched count not lower than the prior
   scan's 69, and the scan log shows how many rows were dropped as clipped. The
