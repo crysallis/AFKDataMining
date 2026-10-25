@@ -552,12 +552,12 @@ def _roster_exact(name: str, roster: set[str]) -> str | None:
     return None
 
 
-# Letters of the scripts real guild names use (Latin + CJK ideographs/ext + kana +
-# Hangul). A decorative tag glyph that OCRs as Greek (ψ/φ) or a symbol falls outside
+# Letters of the scripts real guild names use (Latin + Cyrillic + CJK ideographs/ext +
+# kana + Hangul). A decorative tag glyph that OCRs as Greek (ψ/φ) or a symbol falls outside
 # these and is dropped; one that OCRs as a Latin letter (ψ→i/j) survives this filter
 # but is split off as a short token by _normalize_core's longest-token rule.
 _NAME_CHAR_RE = re.compile(
-    r"[a-z0-9一-鿿㐀-䶿぀-ヿ가-힯]"
+    r"[a-z0-9Ѐ-ӿ一-鿿㐀-䶿぀-ヿ가-힯]"
 )
 # Whitespace + the bracket forms guild tags are wrapped in ('「ψ」'); used to split a
 # read into tag-vs-name tokens. OCR also misreads the brackets, but a delimiter

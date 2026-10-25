@@ -14,6 +14,7 @@ from nav import navigate_to_guild_duel_merit_rankings
 from ocr import block_center
 from modes.common import RankRow, scroll_scan, resolve_entries
 from modes.damage_clip import WINDOW, filter_clear_rows
+from modes.damage_cyrillic import reread_blocks
 from modes.damage_dedupe import drop_duplicate_reads
 from modes.damage_frames import FrameKeeper
 from modes.guild_duel import _is_our_guild
@@ -117,6 +118,7 @@ _state = {"keeper": None, "resolver": None}
 
 
 def _parse(img, ocr_results) -> list[dict]:
+    ocr_results = reread_blocks(img, ocr_results, NAME_X_RANGE, LIST_Y_MIN)
     rows, dropped = filter_clear_rows(img, rows_from_blocks(ocr_results))
     clip_stats["dropped"] += dropped
     entries = rows_to_entries(rows)

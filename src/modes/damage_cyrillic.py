@@ -1,0 +1,42 @@
+"""Cyrillic second pass for the Guild Duel Damage scan · the main recognizer writes
+Cyrillic names as Latin look-alikes (Найхэ as Hanxa), so each name-column block is
+re-read with the Cyrillic recognizer and swapped in only when the result is mostly
+Cyrillic letters at a confident score. Latin, CJK and empty results never replace the
+original read, and confidence alone is never enough."""
+import numpy as np
+
+from ocr import read_cyrillic
+
+MIN_RATIO = 0.6
+MIN_CONF = 0.8
+CROP_PAD = 8
+
+
+def cyrillic_ratio(text: str) -> float:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return 0.0
+    return sum("Ѐ" <= c <= "ӿ" for c in letters) / len(letters)
+
+
+def accept_cyrillic(text: str, conf: float, min_ratio: float = MIN_RATIO, min_conf: float = MIN_CONF) -> bool:
+    return bool(text) and conf >= min_conf and cyrillic_ratio(text) >= min_ratio
+
+
+def reread_blocks(img: np.ndarray, ocr_results: list, name_x_range: tuple[int, int], y_min: int,
+                  reader=read_cyrillic, pad: int = CROP_PAD) -> list:
+    height, width = img.shape[:2]
+    out = []
+    for box, text, conf in ocr_results:
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        cx = sum(xs) / len(xs)
+        cy = sum(ys) / len(ys)
+        if not (name_x_range[0] <= cx <= name_x_range[1] and cy >= y_min):
+            out.append((box, text, conf))
+            continue
+        crop = img[max(0, int(min(ys)) - pad):min(height, int(max(ys)) + pad),
+                   max(0, int(min(xs)) - pad):min(width, int(max(xs)) + pad)]
+        new_text, new_conf = reader(crop)
+        out.append((box, new_text, conf) if accept_cyrillic(new_text, new_conf) else (box, text, conf))
+    return out

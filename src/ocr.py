@@ -38,6 +38,45 @@ def get_engine_v5():
     return _engine_v5 if _engine_v5 else None
 
 
+_engine_cyrillic = None
+
+
+def get_engine_cyrillic():
+    """Lazy-init the PP-OCRv5 Cyrillic recognizer. Returns the engine or None if
+    unavailable. Only the damage scan's second pass uses it."""
+    global _engine_cyrillic
+    if _engine_cyrillic is None:
+        try:
+            logging.disable(logging.INFO)
+            try:
+                from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR as _RapidOCR
+                _engine_cyrillic = _RapidOCR(params={
+                    "Det.ocr_version": OCRVersion.PPOCRV4,
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.lang_type": LangRec.CYRILLIC,
+                    "Rec.model_type": ModelType.MOBILE,
+                })
+            finally:
+                logging.disable(logging.NOTSET)
+        except Exception:
+            _engine_cyrillic = False
+    return _engine_cyrillic if _engine_cyrillic else None
+
+
+def read_cyrillic(crop) -> tuple[str, float]:
+    """Text and confidence of one name crop read by the Cyrillic recognizer
+    (recognition only, no detection) · ("", 0.0) when nothing is read."""
+    engine_c = get_engine_cyrillic()
+    if engine_c is None:
+        return "", 0.0
+    result = engine_c(crop, use_det=False, use_cls=False, use_rec=True)
+    txts = result.txts if result is not None and result.txts else ()
+    if not txts:
+        return "", 0.0
+    scores = getattr(result, "scores", None)
+    return txts[0], float(scores[0]) if scores else 0.0
+
+
 def preprocess(img):
     """CLAHE on luminance + unsharp mask · improves OCR on dark card backgrounds."""
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
