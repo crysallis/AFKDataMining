@@ -227,6 +227,17 @@ result, out = run_scan([True, False])
 check("scan that crossed the reset refuses to save", (result, count_guild_duel_damage(P4)), ("skipped", base))
 check("scan that crossed the reset says so", "window closed during the scan, not saving" in out, True)
 
+gdd.scroll_scan = lambda *a, **k: [{"name": "Fff", "damage": 9_000_000_000},
+                                   {"name": "UTFff", "damage": 9_000_000_000}]
+with db._connect() as conn:
+    conn.execute("DELETE FROM guild_duel_rankings WHERE member_id = ? AND period_start = ?", (fff, P4))
+base = count_guild_duel_damage(P4)
+result, out = run_scan([True, True])
+check("scan merges a duplicate read before name review and saves one row",
+      (result, count_guild_duel_damage(P4)), ("success", base + 1))
+check("scan prints the merge line", "merged 'UTFff' into 'Fff' (same 9B)" in out, True)
+check("a merged duplicate never reaches REVIEW_NAMES", "REVIEW_NAMES" in out, False)
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)
