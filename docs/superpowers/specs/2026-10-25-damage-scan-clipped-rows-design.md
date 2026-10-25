@@ -173,7 +173,9 @@ left. Resolving twice is harmless (`save_correction` is an idempotent upsert).
 For each entry that did NOT resolve to a member, look at the resolved entries
 with exactly the same damage value. Score the unresolved read against each of
 those members' canonical names with a normalized comparison (case-folded,
-look-alike letters folded such as Cyrillic н to h and d to b, accents stripped,
+look-alike letters folded such as Cyrillic н to h and d to b, the three-glyph
+`M` look-alike `IvI` (also `lvl`, `|v|`, `1v1`) to `m` (seen live 2026-10-25:
+`McShake` read as `IvICSnaKe`, 0.71 without the rule, 0.86 with it), accents stripped,
 the read also tried as each space/bracket-separated token and with a leading
 one or two characters removed as a misread tag glyph, non-letters ignored). Do
 NOT fold l or 1 to i: that made `XIII'th` and `Lilith` look 0.91 alike.
