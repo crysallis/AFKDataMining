@@ -172,6 +172,61 @@ check("--force-rescan does NOT open the damage window", force_for_mode("guild_du
 check("--force-damage forces the damage scan", force_for_mode("guild_duel_damage", False, True), True)
 check("no force flag reaches other modes", force_for_mode("arena", True, True), False)
 
+from db import count_guild_duel_damage
+from modes.guild_duel_damage import save_gate
+
+P3 = "2026-11-02"
+ccc, ddd, eee = _member("Ccc"), _member("Ddd"), _member("Eee")
+check("count_guild_duel_damage is 0 for a week with no rows", count_guild_duel_damage(P3), 0)
+save_guild_duel_damage([{"member_id": ccc, "damage": 5_000_000_000},
+                        {"member_id": ddd, "damage": 6_000_000_000}], P3)
+save_guild_duel([{"member_id": eee, "rank": 9, "crests": 1000}], P3)
+check("count_guild_duel_damage counts damage rows only, not crests-only rows", count_guild_duel_damage(P3), 2)
+check("count_guild_duel_damage is per week", count_guild_duel_damage("2026-10-19"), 2)
+
+check("save_gate refuses to save when the window closed during the scan",
+      save_gate(False, 71, 69),
+      (False, ["GUILD_DUEL_DAMAGE: window closed during the scan, not saving."]))
+check("save_gate saves quietly when the count is not lower", save_gate(True, 71, 69), (True, []))
+check("save_gate saves quietly on the first scan of a week", save_gate(True, 60, 0), (True, []))
+check("save_gate warns when fewer members were saved than before",
+      save_gate(True, 60, 69),
+      (True, ["GUILD_DUEL_DAMAGE: warning, saved 60 members, previous scan saved 69."]))
+
+import io
+from contextlib import redirect_stdout
+import modes.guild_duel_damage as gdd
+
+fff = _member("Fff")
+P4 = gdd.guild_duel_damage_period_key(gdd._utcnow())
+gdd.navigate_to_guild_duel_merit_rankings = lambda: None
+gdd.scroll_scan = lambda *a, **k: [{"name": "Fff", "damage": 9_000_000_000}]
+
+
+def run_scan(window_calls):
+    seq = iter(window_calls)
+    real_open = gdd.guild_duel_damage_window_open
+    gdd.guild_duel_damage_window_open = lambda now: next(seq)
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            result = gdd.scan()
+    finally:
+        gdd.guild_duel_damage_window_open = real_open
+    return result, buf.getvalue()
+
+
+base = count_guild_duel_damage(P4)
+result, out = run_scan([True, True])
+check("scan inside the window saves the read member", (result, count_guild_duel_damage(P4)), ("success", base + 1))
+check("scan prints how many row reads the filter skipped", "skipped 0 row reads hidden" in out, True)
+
+with db._connect() as conn:
+    conn.execute("DELETE FROM guild_duel_rankings WHERE member_id = ? AND period_start = ?", (fff, P4))
+result, out = run_scan([True, False])
+check("scan that crossed the reset refuses to save", (result, count_guild_duel_damage(P4)), ("skipped", base))
+check("scan that crossed the reset says so", "window closed during the scan, not saving" in out, True)
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

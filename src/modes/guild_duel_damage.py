@@ -7,12 +7,13 @@ not attacked, so it drops out as a non-data row."""
 import re
 
 from db import (init_db, _utcnow, RosterResolver, guild_duel_damage_period_key,
-                guild_duel_damage_window_open, save_guild_duel_damage)
+                guild_duel_damage_window_open, save_guild_duel_damage,
+                count_guild_duel_damage)
 from device import guild_duel_damage_scroll_down
 from nav import navigate_to_guild_duel_merit_rankings
 from ocr import block_center
 from modes.common import RankRow, scroll_scan, resolve_entries
-from modes.damage_clip import filter_clear_rows
+from modes.damage_clip import WINDOW, filter_clear_rows
 from modes.damage_frames import FrameKeeper
 from modes.guild_duel import _is_our_guild
 
@@ -108,6 +109,8 @@ def rows_to_entries(rows: list) -> list[dict]:
     return entries
 
 
+SETTLE_REGION = (slice(WINDOW[0], WINDOW[1]), slice(0, 1080))
+
 clip_stats = {"dropped": 0}
 _state = {"keeper": None, "resolver": None}
 
@@ -123,6 +126,18 @@ def _parse(img, ocr_results) -> list[dict]:
     return entries
 
 
+def save_gate(window_open: bool, saving: int, previous: int) -> tuple[bool, list[str]]:
+    """Last check before the scan writes. A scan that ran past Monday 00:00 UTC read
+    the reset screen, so nothing is saved; fewer members saved than an earlier scan
+    of the same week only warns, since a row dropped as clipped that no other stop
+    read in full would otherwise be silent."""
+    if not window_open:
+        return False, ["GUILD_DUEL_DAMAGE: window closed during the scan, not saving."]
+    if previous and saving < previous:
+        return True, [f"GUILD_DUEL_DAMAGE: warning, saved {saving} members, previous scan saved {previous}."]
+    return True, []
+
+
 def scan(force: bool = False) -> str:
     init_db()
     now = _utcnow()
@@ -136,7 +151,8 @@ def scan(force: bool = False) -> str:
 
     navigate_to_guild_duel_merit_rankings()
     entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
-                          require_new=False, no_change_limit=4, max_scrolls=70)
+                          require_new=False, no_change_limit=4, max_scrolls=70,
+                          frames_per_stop=1, settle_region=SETTLE_REGION)
     print(f"GUILD_DUEL_DAMAGE: skipped {clip_stats['dropped']} row reads hidden by the pinned bar or list edge.")
     rows = resolve_entries(entries, "Guild Duel Damage")
     matched_names = {r["name"] for r in rows}
@@ -145,6 +161,12 @@ def scan(force: bool = False) -> str:
         fmt_damage=format_damage)
     for line in unmatched_lines(entries, rows, frames):
         print(line)
+    should_save, notes = save_gate(force or guild_duel_damage_window_open(_utcnow()),
+                                   len(rows), count_guild_duel_damage(period))
+    for note in notes:
+        print(note)
+    if not should_save:
+        return "skipped"
     saved = save_guild_duel_damage(rows, period)
     print(f"GUILD_DUEL_DAMAGE: saved {saved} entries for period {period}.")
     return "success"

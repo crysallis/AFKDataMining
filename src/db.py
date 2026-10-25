@@ -1106,6 +1106,14 @@ def save_guild_duel_damage(entries: list[dict], period: str) -> int:
     return len(entries)
 
 
+def count_guild_duel_damage(period: str) -> int:
+    """Members with a damage value saved for the week · crests-only rows do not count."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM guild_duel_rankings WHERE period_start = ? AND damage IS NOT NULL",
+            (period,)).fetchone()[0]
+
+
 def save_honor_duel(entries: list[dict]) -> int:
     scanned_at = _utcnow().isoformat()
     with _connect() as conn:
