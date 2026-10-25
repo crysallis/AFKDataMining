@@ -29,3 +29,7 @@ guild.test.db
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+
+# OCR lab private frames (member names on screen) and unmatched-read debug frames
+ocr_lab/data/
+debug_unmatched/
