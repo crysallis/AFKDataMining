@@ -101,6 +101,30 @@ check("force bypasses the scanned gate", get_guild_duel_period(force=True), P2)
 check("member with crests is no longer missing", get_guild_duel_missing(P2), ["Bbb"])
 db._utcnow = real_utcnow
 
+from modes.common import RankRow
+from modes.guild_duel_damage import parse_damage, rows_to_entries
+
+for text, expected in [
+    ("567B", 567_000_000_000),
+    ("1.2T", 1_200_000_000_000),
+    ("850M", 850_000_000),
+    ("12,345K", 12_345_000),
+    (" 567 b ", 567_000_000_000),
+    ("567", None),
+    ("Total Damage", None),
+    ("", None),
+    ("B", None),
+]:
+    check(f"parse_damage({text!r})", parse_damage(text), expected)
+
+ours = RankRow(rank=2, name="Aaa", texts=["Total Damage", "567B", "RKF RiffRaff"], y=900)
+theirs = RankRow(rank=1, name="Zzz", texts=["Total Damage", "999B", "OtherGuild"], y=800)
+pinned = RankRow(rank=None, name="Bbb", texts=["Unranked", "RKF RiffRaff"], y=1650)
+garbled = RankRow(rank=7, name="Ccc", texts=["Total Damage", "5678", "RKF RiffRaff"], y=1300)
+check("rows_to_entries keeps our guild rows, drops the opponent, the pinned bar and unparseable damage",
+      rows_to_entries([theirs, ours, pinned, garbled]),
+      [{"name": "Aaa", "damage": 567_000_000_000}])
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)
