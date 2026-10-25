@@ -77,8 +77,10 @@ the scan READS the screen, not in the OCR engine:
 
 ## Measurements the design rests on (1080x1920 capture, 2026-10-25)
 
-- Visible list window: y = 723 to 1733. The pinned bar starts exactly at 723
-  (top) or ends exactly at 1733 (bottom).
+- Visible list window: y = 710 to 1733. The pinned bar sits at 723 (top) or ends
+  at 1733 (bottom); 723 is the bar's top, NOT the list's: a row with its card
+  top at 715 is fully visible (found by replaying `frame_08`, where `Wrex` was
+  wrongly dropped at a first-guess top of 723).
 - Own-row card: one contiguous dark run, about 162 px tall, in the strip
   x = 420 to 760 (median brightness under about 195; every normal row reads
   229 or brighter there, the own row reads about (161,140,131) RGB). Found at
@@ -104,7 +106,7 @@ the rows that are safe. For each frame:
 1. Find the own-row card: the dark run described above, accepted only if its
    height is about 150 to 175 px. If none or several plausible runs are found,
    skip step 3 and log a warning once per scan.
-2. Visible window is [723, 1733].
+2. Visible window is [710, 1733].
 3. A row is kept only if its card (`dy - 104` to `dy + 58`) lies fully inside
    the window, within a small tolerance, AND does not overlap the own-row card.
    The own-row card itself is kept as a row (its top matches the detected run
@@ -190,10 +192,12 @@ On 2026-10-25 `Araleth`, `XIII'th` and `Ramz78k` all showed 166B. Measured
 with the folding above: `UTNaizab` and `INaizaD` 1.00 against `NaizaB`,
 `TareAimei` 0.89 against `Tare_Ameli`, `EoccMpa3eñ` 0.84 against `БоссМразей`
 (all merge); `rarehiiici` 0.44, `ψ Kamz/ok` 0.67 against `Ramz78k` and
-`φJ Kailiz/ ok` at best 0.40 against `XIII'th` (all stay unmatched). A floor of
-0.5 would have merged `φJ Kailiz/ ok` into the WRONG member, which is why the
-floor is 0.7; those weak reads are exactly what the row filter should stop
-producing in the first place. If nothing clears the bar the entry stays unmatched exactly as
+`φJ Kailiz/ ok` at best 0.40 against `XIII'th` (all stay unmatched). The floor is 0.7 and the margin 0.15. An earlier, looser
+folding (l and 1 folded to i) scored `φJ Kailiz/ ok` 0.60 against the wrong
+member `XIII'th`, which is how the floor was chosen; with the final folding that
+read scores 0.40 and would not merge even at 0.5. 0.7 is kept as the safer side:
+it only gives up the correct `ψ Kamz/ok` merge, and those weak reads are exactly
+what the row filter should stop producing in the first place. If nothing clears the bar the entry stays unmatched exactly as
 today, which is the safe default (a person looks), and a genuinely new member
 who happens to tie a value is never absorbed without a similar name.
 
