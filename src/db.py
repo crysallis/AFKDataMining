@@ -995,7 +995,7 @@ def get_guild_duel_period(force: bool = False) -> str | None:
         return period
     with _connect() as conn:
         row = conn.execute(
-            "SELECT 1 FROM guild_duel_rankings WHERE period_start = ? LIMIT 1",
+            "SELECT 1 FROM guild_duel_rankings WHERE period_start = ? AND crests IS NOT NULL LIMIT 1",
             (period,)
         ).fetchone()
     if row:
@@ -1011,7 +1011,8 @@ def get_guild_duel_missing(period: str) -> list[str]:
             """SELECT m.ingame_name FROM members m
                WHERE m.active = 1 AND m.pending = 0
                  AND NOT EXISTS (SELECT 1 FROM guild_duel_rankings g
-                                 WHERE g.member_id = m.id AND g.period_start = ?)
+                                 WHERE g.member_id = m.id AND g.period_start = ?
+                                   AND g.crests IS NOT NULL)
                ORDER BY m.ingame_name COLLATE NOCASE""",
             (period,)).fetchall()]
 
@@ -1080,9 +1081,27 @@ def save_guild_duel(entries: list[dict], period: str) -> int:
     scanned_at = _utcnow().isoformat()
     with _connect() as conn:
         conn.executemany(
-            """INSERT OR REPLACE INTO guild_duel_rankings
-               (member_id, period_start, rank, crests, scanned_at) VALUES (?, ?, ?, ?, ?)""",
+            """INSERT INTO guild_duel_rankings
+               (member_id, period_start, rank, crests, scanned_at) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(member_id, period_start) DO UPDATE SET
+                   rank = excluded.rank, crests = excluded.crests, scanned_at = excluded.scanned_at""",
             [(e["member_id"], period, e.get("rank"), e.get("crests"), scanned_at) for e in entries])
+    return len(entries)
+
+
+def save_guild_duel_damage(entries: list[dict], period: str) -> int:
+    """Weekend damage read · touches only damage and damage_scanned_at on a
+    conflict, so crests and rank from the Battle Report survive in either
+    order. scanned_at is NOT NULL, so a brand new damage-only row borrows the
+    same instant until the crests scan rewrites it."""
+    scanned_at = _utcnow().isoformat()
+    with _connect() as conn:
+        conn.executemany(
+            """INSERT INTO guild_duel_rankings
+               (member_id, period_start, scanned_at, damage, damage_scanned_at) VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(member_id, period_start) DO UPDATE SET
+                   damage = excluded.damage, damage_scanned_at = excluded.damage_scanned_at""",
+            [(e["member_id"], period, scanned_at, e["damage"], scanned_at) for e in entries])
     return len(entries)
 
 

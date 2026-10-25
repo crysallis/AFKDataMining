@@ -7,8 +7,14 @@ import sys
 from datetime import datetime
 sys.path.insert(0, "src")
 
+import tempfile
+from pathlib import Path
+
+import db
 from db import (guild_duel_period_key, guild_duel_damage_period_key,
-                guild_duel_damage_window_open)
+                guild_duel_damage_window_open, save_guild_duel,
+                save_guild_duel_damage, get_guild_duel_period,
+                get_guild_duel_missing)
 
 failures = 0
 total = 0
@@ -33,6 +39,67 @@ check("Fri 23:59:59 window closed", guild_duel_damage_window_open(datetime(2026,
 check("Sat 00:00:00 window open", guild_duel_damage_window_open(datetime(2026, 10, 24, 0, 0, 0)), True)
 check("Sun 23:59:59 window open", guild_duel_damage_window_open(datetime(2026, 10, 25, 23, 59, 59)), True)
 check("Mon 00:00:00 window closed", guild_duel_damage_window_open(datetime(2026, 10, 26, 0, 0, 0)), False)
+
+_tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+db.DB_PATH = Path(_tmp.name) / "test_guild.db"
+db.init_db()
+with db._connect() as _conn:
+    _conn.execute("CREATE TABLE IF NOT EXISTS warbands (id INTEGER PRIMARY KEY, name TEXT)")
+
+
+def _member(name):
+    with db._connect() as conn:
+        mid = conn.execute(
+            "INSERT INTO members (ingame_name, first_seen, pending, active) VALUES (?, ?, 0, 1)",
+            (name, "2026-01-01")).lastrowid
+    return mid
+
+
+def _row(member_id, period):
+    with db._connect() as conn:
+        r = conn.execute(
+            "SELECT * FROM guild_duel_rankings WHERE member_id = ? AND period_start = ?",
+            (member_id, period)).fetchone()
+    return dict(r) if r else None
+
+
+P = "2026-10-19"
+aaa, bbb = _member("Aaa"), _member("Bbb")
+
+save_guild_duel_damage([{"member_id": aaa, "damage": 567_000_000_000}], P)
+save_guild_duel([{"member_id": aaa, "rank": 3, "crests": 4000}], P)
+r = _row(aaa, P)
+check("damage then crests keeps damage", r["damage"], 567_000_000_000)
+check("damage then crests sets rank and crests", (r["rank"], r["crests"]), (3, 4000))
+check("damage_scanned_at is stamped", bool(r["damage_scanned_at"]), True)
+
+save_guild_duel([{"member_id": bbb, "rank": 5, "crests": 3000}], P)
+before = _row(bbb, P)
+save_guild_duel_damage([{"member_id": bbb, "damage": 100_000_000_000}], P)
+after = _row(bbb, P)
+check("crests then damage keeps rank, crests and scanned_at",
+      (after["rank"], after["crests"], after["scanned_at"]),
+      (before["rank"], before["crests"], before["scanned_at"]))
+check("crests then damage sets damage", after["damage"], 100_000_000_000)
+
+save_guild_duel_damage([{"member_id": bbb, "damage": 200_000_000_000}], P)
+again = _row(bbb, P)
+check("second damage save overwrites only damage",
+      (again["damage"], again["crests"], again["scanned_at"]),
+      (200_000_000_000, before["crests"], before["scanned_at"]))
+
+P2 = "2026-10-26"
+real_utcnow = db._utcnow
+db._utcnow = lambda: datetime(2026, 11, 3)
+save_guild_duel_damage([{"member_id": aaa, "damage": 1_000_000_000}], P2)
+check("damage-only week does not block the Monday scan", get_guild_duel_period(), P2)
+check("damage-only member is still listed missing for crests",
+      get_guild_duel_missing(P2), ["Aaa", "Bbb"])
+save_guild_duel([{"member_id": aaa, "rank": 1, "crests": 5000}], P2)
+check("a week with crests is scanned", get_guild_duel_period(), None)
+check("force bypasses the scanned gate", get_guild_duel_period(force=True), P2)
+check("member with crests is no longer missing", get_guild_duel_missing(P2), ["Bbb"])
+db._utcnow = real_utcnow
 
 if failures:
     print(f"\n{failures}/{total} cases failed.")
