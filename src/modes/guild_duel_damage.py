@@ -6,13 +6,14 @@ never read. The viewer's own pinned bar carries no damage value when they have
 not attacked, so it drops out as a non-data row."""
 import re
 
-from db import (init_db, _utcnow, guild_duel_damage_period_key,
+from db import (init_db, _utcnow, RosterResolver, guild_duel_damage_period_key,
                 guild_duel_damage_window_open, save_guild_duel_damage)
 from device import guild_duel_damage_scroll_down
 from nav import navigate_to_guild_duel_merit_rankings
 from ocr import block_center
 from modes.common import RankRow, scroll_scan, resolve_entries
 from modes.damage_clip import filter_clear_rows
+from modes.damage_frames import FrameKeeper
 from modes.guild_duel import _is_our_guild
 
 # Podium sits above the first list row (~y725 on a 1080x1920 capture).
@@ -54,14 +55,22 @@ def format_damage(n: int) -> str:
     return str(n)
 
 
-def unmatched_lines(entries: list[dict], rows: list[dict]) -> list[str]:
+def unmatched_lines(entries: list[dict], rows: list[dict],
+                    frames: dict | None = None) -> list[str]:
     """One line per entry whose name resolve_entries could not match, with the
     damage seen beside it so the person can be found by value on the in-game
     list (then fixed by a name correction or a rescan). Sent through /scan
     because it carries the GUILD_DUEL_DAMAGE prefix."""
     matched = {r["name"] for r in rows}
-    return [f"GUILD_DUEL_DAMAGE: unmatched '{e['name']}' · saw {format_damage(e['damage'])}"
-            for e in entries if e["name"] not in matched]
+    frames = frames or {}
+    lines = []
+    for e in entries:
+        if e["name"] in matched:
+            continue
+        line = f"GUILD_DUEL_DAMAGE: unmatched '{e['name']}' · saw {format_damage(e['damage'])}"
+        path = frames.get((e["name"], e["damage"]))
+        lines.append(f"{line} · frame {path}" if path else line)
+    return lines
 
 
 def rows_from_blocks(ocr_results: list) -> list[RankRow]:
@@ -100,12 +109,18 @@ def rows_to_entries(rows: list) -> list[dict]:
 
 
 clip_stats = {"dropped": 0}
+_state = {"keeper": None, "resolver": None}
 
 
 def _parse(img, ocr_results) -> list[dict]:
     rows, dropped = filter_clear_rows(img, rows_from_blocks(ocr_results))
     clip_stats["dropped"] += dropped
-    return rows_to_entries(rows)
+    entries = rows_to_entries(rows)
+    if _state["keeper"] is not None:
+        for e in entries:
+            if _state["resolver"].resolve(e["name"]) is None:
+                _state["keeper"].remember(img, e["name"], e["damage"])
+    return entries
 
 
 def scan(force: bool = False) -> str:
@@ -116,13 +131,19 @@ def scan(force: bool = False) -> str:
         return "skipped"
     period = guild_duel_damage_period_key(now)
     clip_stats["dropped"] = 0
+    _state["keeper"] = FrameKeeper()
+    _state["resolver"] = RosterResolver(learn=False)
 
     navigate_to_guild_duel_merit_rankings()
     entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
                           require_new=False, no_change_limit=4, max_scrolls=70)
     print(f"GUILD_DUEL_DAMAGE: skipped {clip_stats['dropped']} row reads hidden by the pinned bar or list edge.")
     rows = resolve_entries(entries, "Guild Duel Damage")
-    for line in unmatched_lines(entries, rows):
+    matched_names = {r["name"] for r in rows}
+    frames = _state["keeper"].write_for(
+        [(e["name"], e["damage"]) for e in entries if e["name"] not in matched_names],
+        fmt_damage=format_damage)
+    for line in unmatched_lines(entries, rows, frames):
         print(line)
     saved = save_guild_duel_damage(rows, period)
     print(f"GUILD_DUEL_DAMAGE: saved {saved} entries for period {period}.")
