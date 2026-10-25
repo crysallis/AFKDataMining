@@ -37,7 +37,7 @@ Window screenshots are scaled/different pixel space · templates will not match.
 | `src/capture_ids.py` | Standalone safety-net pass over the guild list for any member still missing an `ingame_id` after the main scan's `make_id_fallback_hook` already ran · unconditional early exit when nobody needs one · calls `mark_progress()` on real work now (didn't before — see ID-Assisted Name Resolution) |
 | `src/import_history.py` | One-time historical import script (10 snapshots, 10/10/2025–5/3/2026) |
 | `src/modes/common.py` | Shared vote plumbing for the ranking-mode scans (multi-frame consensus voting) · `RankRow.texts` collects any non-numeric text near a row beyond name/rank/points, including a second line under the name · `scroll_scan()`'s `on_stop` hook + `make_id_fallback_hook()` (see ID-Assisted Name Resolution) |
-| `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote · all but `guild_duel.py` wired to `make_id_fallback_hook()` |
+| `src/modes/dream_realm.py`, `arena.py`, `afk_stages.py`, `supreme_arena.py`, `honor_duel.py`, `arcane_lab.py`, `guild_duel.py`, `guild_duel_damage.py` | Per-mode ranking scans · read every ranking card across many frames, resolve by majority vote · all but `guild_duel.py` and `guild_duel_damage.py` wired to `make_id_fallback_hook()` |
 | `src/add_guild_duel.py` | CLI to add/correct one Guild Duel row by hand, or `--missing` to list active members the scan didn't capture · same logic as the bot's `/guildduel` |
 | `src/modes/manual_scan.py` | Parses a user-submitted Supreme Arena screenshot (arbitrary resolution/aspect ratio) for off-server members; invoked by the bot's `/sa-manual` |
 | `src/modes/clashfronts.py` | Scans the Clashfronts "Manage Sign-Ups" roster (not a Rankings screen) · name + selected/unselected checkmark per row, full-list overwrite · detects and skips the post-signup deployment map |
@@ -416,6 +416,15 @@ Monday 00:00 UTC, no lag).
   than left mixed with daily partial reads.
 - `_is_our_guild()` per-row guild-tag filtering (see above) is unchanged and
   still applies on this screen.
+
+## Weekend damage scan (`guild_duel_damage`)
+
+- Reads each member's total boss damage from the live "Total Duel Merit Rankings" list and saves it as `damage` (a raw integer, `567B` is 567000000000) plus `damage_scanned_at` on that week's `guild_duel_rankings` row. The Monday Battle Report scan fills `crests` and `rank` on the same row, so a row can be damage-only, crests-only or both. Anything meaning "has crests" filters `crests IS NOT NULL` (`get_guild_duel_period`, `get_guild_duel_missing`), and both saves are UPSERTs that touch only their own columns.
+- Window: Saturday 00:00 to Sunday 23:59:59 UTC only (`guild_duel_damage_window_open`). Monday 00:00 UTC resets the screen to zero, so outside the window the mode skips and writes nothing (`--force-rescan` overrides). The period key is this week's Monday (`guild_duel_damage_period_key`), the same date `guild_duel_period_key` returns once the Battle Report is readable.
+- Route: shared `_enter_guild_duel_card()` (Battle Modes, Guild Mode tab, Guild Duel card), then, during the battle phase, the card lands in the guild hall: tap the in-world "Guild Duel" sign, then "Details" on the boss screen. Never taps Elite Duelers. `navigate_to_guild_duel_battle_report` uses the same helper but cannot be live-checked during the battle phase (no Elite Duelers tab on the hall landing); verify it on a Monday.
+- Parser: `rows_from_blocks()` pairs each damage value with the name above it and the guild tag below it by position and does NOT use `parse_rank_rows`: rank 1 is an ornate glyph OCR never reads, so a rank-keyed parser silently drops the top row. The list mixes both guilds, so rows drop on the guild tag. The pinned own-row bar pairs with its own damage, never the row it covers. Card geometry constants at the top of `modes/guild_duel_damage.py` were measured on a 1080x1920 capture.
+- Scroll: `guild_duel_damage_scroll_down()`, about 3 rows per swipe. The list ends around stop 35 but `screen_changed` never fires (animated background), so the scan idles to `max_scrolls=70`. `require_new=True` was rejected on purpose: it stops after 5 stops with no new names and would save nothing in a week where the opponent holds the first 15 rows.
+- Unmatched names print `REVIEW_NAMES` and are not saved (membership belongs to the roster scan). Tests: `test_guild_duel_damage.py` (repo root, plain script, temp DB). Bot side: off by default (`SCAN_GUILD_DUEL_DAMAGE`). Design and plan: `docs/superpowers/specs/2026-10-24-guild-duel-damage-scan-design.md` and the matching plan.
 
 ## ID-Assisted Name Resolution (2026-08-24)
 

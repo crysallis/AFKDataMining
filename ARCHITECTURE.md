@@ -356,7 +356,7 @@ This absolute value is what the inactivity alert queries against, since relative
 
 Separate from the guild roster scrape above, the scraper also captures per-member
 **rankings** for seven game modes: `dream_realm`, `afk_stages`, `arena`,
-`supreme_arena`, `honor_duel`, `arcane_lab`, `guild_duel` — plus `clashfronts`,
+`supreme_arena`, `honor_duel`, `arcane_lab`, `guild_duel` (plus `guild_duel_damage`, a Saturday-Sunday read of weekend boss damage onto the same weekly row) — plus `clashfronts`,
 which tracks sign-up/selection status rather than a ranking (see below). Each
 lives in `src/modes/<mode>.py` with a `scan()` entry point and is run via `scraper.py`
 CLI flags (`--arena`, `--honor-duel`, `--clashfronts`, `--guild-duel`, ...) or the bot's
