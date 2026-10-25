@@ -44,6 +44,7 @@ check("find_own_card returns None when two plausible bands exist", find_own_card
 check("row_card is 104 above and 58 below the damage centre", row_card(1004), (900, 1062))
 
 check("is_clear: a card inside the window with no own card", is_clear((726, 888), None), True)
+check("is_clear: a fully visible card whose top is above the pinned bar's top (Wrex, frame_08)", is_clear((715, 877), (900, 1062)), True)
 check("is_clear: a card running off the bottom edge", is_clear((1596, 1758), None), False)
 check("is_clear: a card cut by the top edge", is_clear((696, 858), (723, 884)), False)
 check("is_clear: a card overlapping the own card", is_clear((800, 962), (900, 1062)), False)
@@ -72,6 +73,25 @@ check("bottom-pinned state counts the dropped row", dropped, 1)
 kept, dropped = filter_clear_rows(frame(), rows(1190, 1700))
 check("no own card found: the edge rule still applies and the scan fails open", [r.y for r in kept], [1190])
 check("no own card found: the edge-dropped row is counted", dropped, 1)
+
+from modes.guild_duel_damage import _parse, clip_stats
+
+
+def blk(x, y, text):
+    return ([[x - 20, y - 10], [x + 20, y - 10], [x + 20, y + 10], [x - 20, y + 10]], text, 0.99)
+
+
+def card_blocks(dy, name, damage):
+    return [blk(400, dy - 41, name), blk(945, dy, damage), blk(450, dy + 16, "RKF RiffRaff")]
+
+
+top_pinned = frame((723, 884))
+blocks = card_blocks(827, "Crysallis", "376B") + card_blocks(928, "Tarehiiei", "202B") + card_blocks(1110, "Matikhv", "201B")
+clip_stats["dropped"] = 0
+check("_parse drops the row hidden under the pinned bar and keeps the own row and the clear row",
+      [(e["name"], e["damage"]) for e in _parse(top_pinned, blocks)],
+      [("Crysallis", 376_000_000_000), ("Matikhv", 201_000_000_000)])
+check("_parse counts the dropped row in clip_stats", clip_stats["dropped"], 1)
 
 if failures:
     print(f"\n{failures}/{total} cases failed.")

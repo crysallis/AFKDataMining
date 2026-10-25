@@ -12,6 +12,7 @@ from device import guild_duel_damage_scroll_down
 from nav import navigate_to_guild_duel_merit_rankings
 from ocr import block_center
 from modes.common import RankRow, scroll_scan, resolve_entries
+from modes.damage_clip import filter_clear_rows
 from modes.guild_duel import _is_our_guild
 
 # Podium sits above the first list row (~y725 on a 1080x1920 capture).
@@ -98,8 +99,13 @@ def rows_to_entries(rows: list) -> list[dict]:
     return entries
 
 
+clip_stats = {"dropped": 0}
+
+
 def _parse(img, ocr_results) -> list[dict]:
-    return rows_to_entries(rows_from_blocks(ocr_results))
+    rows, dropped = filter_clear_rows(img, rows_from_blocks(ocr_results))
+    clip_stats["dropped"] += dropped
+    return rows_to_entries(rows)
 
 
 def scan(force: bool = False) -> str:
@@ -109,10 +115,12 @@ def scan(force: bool = False) -> str:
         print("GUILD_DUEL_DAMAGE: skipping (outside the Saturday-Sunday UTC window).")
         return "skipped"
     period = guild_duel_damage_period_key(now)
+    clip_stats["dropped"] = 0
 
     navigate_to_guild_duel_merit_rankings()
     entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
                           require_new=False, no_change_limit=4, max_scrolls=70)
+    print(f"GUILD_DUEL_DAMAGE: skipped {clip_stats['dropped']} row reads hidden by the pinned bar or list edge.")
     rows = resolve_entries(entries, "Guild Duel Damage")
     for line in unmatched_lines(entries, rows):
         print(line)

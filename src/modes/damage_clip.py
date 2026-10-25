@@ -5,7 +5,7 @@ screen). Rows cut by the bar or a list edge read as junk, so they are skipped an
 in full at another scroll stop."""
 import numpy as np
 
-WINDOW = (723, 1733)
+WINDOW = (710, 1733)
 EDGE_TOL = 6
 
 CARD_ABOVE_DAMAGE = 104
