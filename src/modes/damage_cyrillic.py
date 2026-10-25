@@ -24,7 +24,11 @@ def accept_cyrillic(text: str, conf: float, min_ratio: float = MIN_RATIO, min_co
 
 
 def reread_blocks(img: np.ndarray, ocr_results: list, name_x_range: tuple[int, int], y_min: int,
-                  reader=read_cyrillic, pad: int = CROP_PAD) -> list:
+                  reader=read_cyrillic, pad: int = CROP_PAD, resolve_fn=None) -> list:
+    """resolve_fn(name) -> canonical member name or None. When given, a read that
+    already resolves to a member is replaced only by a Cyrillic read that resolves
+    to the same member, so a Cyrillic-named member still stored under Latin
+    look-alikes cannot start failing to match."""
     height, width = img.shape[:2]
     out = []
     for box, text, conf in ocr_results:
@@ -41,5 +45,9 @@ def reread_blocks(img: np.ndarray, ocr_results: list, name_x_range: tuple[int, i
             new_text, new_conf = reader(crop)
         except Exception:
             new_text, new_conf = "", 0.0
-        out.append((box, new_text, conf) if accept_cyrillic(new_text, new_conf) else (box, text, conf))
+        replace = accept_cyrillic(new_text, new_conf)
+        if replace and resolve_fn is not None:
+            current = resolve_fn(text)
+            replace = current is None or resolve_fn(new_text) == current
+        out.append((box, new_text, conf) if replace else (box, text, conf))
     return out

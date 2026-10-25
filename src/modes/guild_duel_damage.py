@@ -126,7 +126,9 @@ _state = {"keeper": None, "resolver": None}
 
 
 def _parse(img, ocr_results) -> list[dict]:
-    ocr_results = reread_blocks(img, ocr_results, NAME_X_RANGE, LIST_Y_MIN)
+    resolver = _state["resolver"]
+    ocr_results = reread_blocks(img, ocr_results, NAME_X_RANGE, LIST_Y_MIN,
+                                resolve_fn=resolver.resolve if resolver is not None else None)
     own = find_own_card(img)
     if own is None:
         clip_stats["no_own_card"] += 1
