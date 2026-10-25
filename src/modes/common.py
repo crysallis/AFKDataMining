@@ -409,10 +409,35 @@ def _vote_entries(observations: list[dict], label: str,
     return result
 
 
+def _region_diff(a: np.ndarray, b: np.ndarray) -> float:
+    return float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16))))
+
+
+def wait_until_settled(region: tuple[slice, slice], threshold: float = 0.5,
+                       interval: float = 0.3, cap: float = 6.0,
+                       screenshot_fn=screenshot, sleep_fn=time.sleep,
+                       clock_fn=time.monotonic) -> tuple[np.ndarray, bool]:
+    """Polls screenshots until two consecutive ones differ by less than
+    `threshold` (mean absolute pixel difference) inside `region`, i.e. the list
+    has stopped moving after a swipe. Returns (last screenshot, settled); gives
+    up after `cap` seconds with settled False so a stuck screen cannot hang a
+    scan."""
+    start = clock_fn()
+    prev = screenshot_fn()
+    while True:
+        sleep_fn(interval)
+        curr = screenshot_fn()
+        if _region_diff(prev[region], curr[region]) < threshold:
+            return curr, True
+        prev = curr
+        if clock_fn() - start >= cap:
+            return curr, False
+
+
 def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                 reentry_fn=None, frames_per_stop: int = 2, scroll_fn=None,
                 require_new: bool = True, no_change_limit: int = 2,
-                on_stop=None) -> list[dict]:
+                on_stop=None, settle_region=None) -> list[dict]:
     """Open-ended scroll pass for ranked lists. All raw observations from every
     frame are accumulated then consolidated via majority vote per rank.
 
@@ -439,7 +464,11 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
     scroll that's already happening avoids needing a separate re-navigation
     (which broke Arcane Lab's list by over-scrolling to relocate a row after
     the fact -- see project memory). Every existing caller that doesn't pass
-    this is unaffected."""
+    this is unaffected.
+    settle_region: (row slice, column slice) of the list area. When given, the
+    fixed 1.2s pause after each swipe is replaced by wait_until_settled over that
+    region, and the settled screenshot feeds the end-of-list check; None keeps
+    the fixed pause."""
     all_observations: list[dict] = []
 
     def _one_pass() -> None:
@@ -478,8 +507,13 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                     no_new = 0
             (scroll_fn or scroll_down)()
             scrolls += 1
-            time.sleep(1.2)
-            curr_img = screenshot()
+            if settle_region is None:
+                time.sleep(1.2)
+                curr_img = screenshot()
+            else:
+                curr_img, settled = wait_until_settled(settle_region)
+                if not settled:
+                    logging.warning("%s: screen still moving at the settle cap, reading anyway.", label)
             if not screen_changed(last_img, curr_img):
                 no_change += 1
                 if no_change >= no_change_limit:
