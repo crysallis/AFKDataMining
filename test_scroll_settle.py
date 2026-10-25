@@ -124,6 +124,42 @@ check("with a settle region the poll runs once per scroll with that region", set
 sleeps, settles = run_scan(REGION, settle_result=(np.zeros((20, 20, 3), dtype=np.uint8), False))
 check("a hit settle cap still reads on and ends cleanly", settles, [REGION])
 
+LIST_REGION = (slice(20, 40), slice(0, 20))
+
+
+def animated_top_shots():
+    state = {"i": 0}
+
+    def shot():
+        state["i"] += 1
+        a = np.zeros((40, 20, 3), dtype=np.uint8)
+        a[:10, :] = 200 if state["i"] % 2 else 0
+        return a
+    return shot
+
+
+def scrolls_until_done(settle_region):
+    scrolls = {"n": 0}
+    shot = animated_top_shots()
+    saved = (common.screenshot, common.ocr_image, common.time.sleep, common.wait_until_settled)
+    common.screenshot = shot
+    common.ocr_image = lambda im: []
+    common.time.sleep = lambda s: None
+    common.wait_until_settled = lambda region, **kw: (shot(), True)
+    try:
+        scroll_scan(lambda im, res: [], "test", max_scrolls=10, frames_per_stop=1,
+                    scroll_fn=lambda: scrolls.__setitem__("n", scrolls["n"] + 1),
+                    require_new=False, no_change_limit=2, settle_region=settle_region)
+    finally:
+        common.screenshot, common.ocr_image, common.time.sleep, common.wait_until_settled = saved
+    return scrolls["n"]
+
+
+check("with a list region, an animated background no longer hides the end of the list",
+      scrolls_until_done(LIST_REGION), 2)
+check("without a list region the whole-frame end check is unchanged (animation keeps it scrolling)",
+      scrolls_until_done(None), 10)
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

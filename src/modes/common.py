@@ -467,8 +467,11 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
     this is unaffected.
     settle_region: (row slice, column slice) of the list area. When given, the
     fixed 1.2s pause after each swipe is replaced by wait_until_settled over that
-    region, and the settled screenshot feeds the end-of-list check; None keeps
-    the fixed pause."""
+    region, the settled screenshot feeds the end-of-list check, and that check
+    compares the list region only (an animated podium or background moves the whole
+    frame past screen_changed's threshold even when the list has stopped, so the
+    scan never ended before the scroll cap); None keeps the fixed pause and the
+    whole-frame check."""
     all_observations: list[dict] = []
 
     def _one_pass() -> None:
@@ -514,7 +517,11 @@ def scroll_scan(parse_fn, label: str, max_scrolls: int = MAX_SCROLLS,
                 curr_img, settled = wait_until_settled(settle_region)
                 if not settled:
                     logging.warning("%s: screen still moving at the settle cap, reading anyway.", label)
-            if not screen_changed(last_img, curr_img):
+            if settle_region is None:
+                changed = screen_changed(last_img, curr_img)
+            else:
+                changed = screen_changed(last_img[settle_region], curr_img[settle_region])
+            if not changed:
                 no_change += 1
                 if no_change >= no_change_limit:
                     break
