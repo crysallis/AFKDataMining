@@ -44,6 +44,25 @@ def parse_damage(text: str) -> int | None:
     return round(mantissa * _MULTIPLIERS[m.group(2).upper()])
 
 
+def format_damage(n: int) -> str:
+    """567000000000 -> '567B' · the screen's own style, for log lines a person
+    scans against the in-game list."""
+    for size, suffix in ((10**12, "T"), (10**9, "B"), (10**6, "M")):
+        if n >= size:
+            return f"{n / size:g}{suffix}"
+    return str(n)
+
+
+def unmatched_lines(entries: list[dict], rows: list[dict]) -> list[str]:
+    """One line per entry whose name resolve_entries could not match, with the
+    damage seen beside it so the person can be found by value on the in-game
+    list (then fixed by a name correction or a rescan). Sent through /scan
+    because it carries the GUILD_DUEL_DAMAGE prefix."""
+    matched = {r["name"] for r in rows}
+    return [f"GUILD_DUEL_DAMAGE: unmatched '{e['name']}' · saw {format_damage(e['damage'])}"
+            for e in entries if e["name"] not in matched]
+
+
 def rows_from_blocks(ocr_results: list) -> list[RankRow]:
     """One row per damage value, paired with the name block just above it and
     the guild tag just below it, by position. Rank is never needed (and rank 1
@@ -95,6 +114,8 @@ def scan(force: bool = False) -> str:
     entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
                           require_new=False, no_change_limit=4, max_scrolls=70)
     rows = resolve_entries(entries, "Guild Duel Damage")
+    for line in unmatched_lines(entries, rows):
+        print(line)
     saved = save_guild_duel_damage(rows, period)
     print(f"GUILD_DUEL_DAMAGE: saved {saved} entries for period {period}.")
     return "success"

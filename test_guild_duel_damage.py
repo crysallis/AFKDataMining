@@ -150,6 +150,20 @@ under_the_bar = [
 check("the pinned bar keeps its own damage and is not mixed with the row it covers",
       rows_to_entries(rows_from_blocks(under_the_bar)), [{"name": "Ccc", "damage": 17_581_000_000}])
 
+from modes.guild_duel_damage import format_damage, unmatched_lines
+
+for value, expected in [(567_000_000_000, "567B"), (17_581_000_000, "17.581B"),
+                        (850_000_000, "850M"), (1_200_000_000_000, "1.2T"), (999, "999")]:
+    check(f"format_damage({value})", format_damage(value), expected)
+
+check("unmatched_lines shows the name and the damage seen for each unmatched entry",
+      unmatched_lines(
+          [{"name": "Aaa", "damage": 567_000_000_000}, {"name": "aliiaj", "damage": 365_000_000_000}],
+          [{"name": "Aaa", "damage": 567_000_000_000, "member_id": 1}]),
+      ["GUILD_DUEL_DAMAGE: unmatched 'aliiaj' · saw 365B"])
+check("unmatched_lines is empty when every entry matched",
+      unmatched_lines([{"name": "Aaa", "damage": 1}], [{"name": "Aaa", "damage": 1, "member_id": 1}]), [])
+
 from scraper import force_for_mode
 
 check("--force-rescan forces guild_duel", force_for_mode("guild_duel", True, False), True)
