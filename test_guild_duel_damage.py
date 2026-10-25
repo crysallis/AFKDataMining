@@ -125,6 +125,31 @@ check("rows_to_entries keeps our guild rows, drops the opponent, the pinned bar 
       rows_to_entries([theirs, ours, pinned, garbled]),
       [{"name": "Aaa", "damage": 567_000_000_000}])
 
+from modes.guild_duel_damage import rows_from_blocks
+
+
+def blk(x, y, text):
+    return ([[x - 20, y - 10], [x + 20, y - 10], [x + 20, y + 10], [x - 20, y + 10]], text, 0.99)
+
+
+top_of_list = [
+    blk(300, 500, "Podium"), blk(900, 520, "999B"),
+    blk(940, 773, "Total Damage"), blk(369, 785, "Aaa"), blk(947, 826, "567B"), blk(448, 842, "RKF RiffRaff"),
+    blk(99, 989, "2"), blk(394, 971, "Zzz"), blk(945, 959, "Total Damage"), blk(948, 1012, "515B"), blk(425, 1028, "OtherGuild"),
+    blk(365, 1159, "Bbb"), blk(941, 1144, "Total Damage"), blk(947, 1198, "274D"), blk(424, 1213, "RKF RiffRaff"),
+]
+check("rows_from_blocks pairs names with damage by position and needs no rank glyph (rank 1 has none)",
+      [r.name for r in rows_from_blocks(top_of_list)], ["Aaa", "Zzz"])
+check("rank-1 row survives the whole pipeline while the opponent and unparseable rows drop",
+      rows_to_entries(rows_from_blocks(top_of_list)), [{"name": "Aaa", "damage": 567_000_000_000}])
+
+under_the_bar = [
+    blk(369, 1531, "Bjies"), blk(947, 1560, "274D"),
+    blk(369, 1636, "Ccc"), blk(947, 1677, "17581M"), blk(448, 1692, "RKF RiffRaff"),
+]
+check("the pinned bar keeps its own damage and is not mixed with the row it covers",
+      rows_to_entries(rows_from_blocks(under_the_bar)), [{"name": "Ccc", "damage": 17_581_000_000}])
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

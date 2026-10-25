@@ -562,6 +562,42 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
 
 
+def _enter_guild_duel_card(ocr_image) -> bool:
+    """Overview -> Battle Modes -> 'Guild Mode' tab -> Guild Duel card, each
+    followed by a stable-wait. Shared by the Battle Report and Merit Rankings
+    routes; returns False on any miss so the caller re-homes and retries."""
+    card_label = MODE_CARD_LABEL["guild_duel"]
+
+    if not navigate_to_overview():
+        logging.warning("Overview not reached.")
+        return False
+
+    if not _tap_to_reach(
+        lambda s: find_template(s, _t("battle_modes_btn"), threshold=0.75),
+        _is_at_battle_modes, "battle_modes", fallback_xy=None,
+    ):
+        logging.warning("Battle Modes not reached, re-homing.")
+        return False
+
+    # Battle Modes now opens on a 'Routines' tab; Guild Duel lives under
+    # the 'Guild Mode' tab (label wraps to two lines; confirmed live that
+    # OCR returns just the 'Guild' fragment, so try it first).
+    if not (_ocr_tap_text(ocr_image, "Guild", "guild_duel:guild_mode_tab", attempts=3)
+            or _ocr_tap_text(ocr_image, "Guild Mode", "guild_duel:guild_mode_tab_whole", attempts=2)):
+        logging.warning("'Guild Mode' tab not found, re-homing.")
+        return False
+    _wait_until_stable()
+
+    if not _ocr_tap_text(
+        ocr_image, card_label, f"card:{card_label}",
+        scroll_between=True, attempts=5,
+    ):
+        logging.warning("Card '%s' not found, re-homing.", card_label)
+        return False
+    _wait_until_stable()
+    return True
+
+
 def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
     """Navigate from any screen to the Guild Duel 'Battle Report' popup.
 
@@ -578,37 +614,12 @@ def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
     stops at the card tap and drives its own two extra taps, same overall
     shape as navigate_to_clashfronts_signups."""
     from ocr import ocr_image
-    card_label = MODE_CARD_LABEL["guild_duel"]
     logging.info("Navigating to Guild Duel Battle Report.")
 
     for attempt in range(1, flow_attempts + 1):
-        if not navigate_to_overview():
-            logging.warning("Overview not reached (flow attempt %d/%d).", attempt, flow_attempts)
+        if not _enter_guild_duel_card(ocr_image):
+            logging.warning("Guild Duel card not reached (flow attempt %d/%d).", attempt, flow_attempts)
             continue
-
-        if not _tap_to_reach(
-            lambda s: find_template(s, _t("battle_modes_btn"), threshold=0.75),
-            _is_at_battle_modes, "battle_modes", fallback_xy=None,
-        ):
-            logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
-            continue
-
-        # Battle Modes now opens on a 'Routines' tab; Guild Duel lives under
-        # the 'Guild Mode' tab (label wraps to two lines; confirmed live that
-        # OCR returns just the 'Guild' fragment, so try it first).
-        if not (_ocr_tap_text(ocr_image, "Guild", "guild_duel:guild_mode_tab", attempts=3)
-                or _ocr_tap_text(ocr_image, "Guild Mode", "guild_duel:guild_mode_tab_whole", attempts=2)):
-            logging.warning("'Guild Mode' tab not found (flow attempt %d), re-homing.", attempt)
-            continue
-        _wait_until_stable()
-
-        if not _ocr_tap_text(
-            ocr_image, card_label, f"card:{card_label}",
-            scroll_between=True, attempts=5,
-        ):
-            logging.warning("Card '%s' not found (flow attempt %d), re-homing.", card_label, attempt)
-            continue
-        _wait_until_stable()
 
         if not _ocr_tap_text(ocr_image, "Elite Duelers", "guild_duel:elite_duelers_tab", attempts=4):
             logging.warning("'Elite Duelers' tab not found (flow attempt %d), re-homing.", attempt)
@@ -630,6 +641,51 @@ def navigate_to_guild_duel_battle_report(flow_attempts: int = 3) -> None:
 
     cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_guild_duel_battle_report.png"), screenshot())
     raise RuntimeError(f"Could not reach Guild Duel Battle Report after {flow_attempts} attempts.")
+
+
+def _at_merit_rankings(ocr_blocks) -> bool:
+    """The list screen's stylized title ('Total Duel Merit Rankings') sits at the
+    very top; the boss screen has the same words in its bottom-left panel, so
+    only a block near the top of the screen counts."""
+    from ocr import block_center
+    return any(block_center(box)[1] < 300 and "merit" in text.lower()
+               for box, text, _conf in ocr_blocks)
+
+
+def navigate_to_guild_duel_merit_rankings(flow_attempts: int = 3) -> None:
+    """Navigate from any screen to the 'Total Duel Merit Rankings' list.
+
+    During the weekend battle phase the Guild Duel card lands on the guild hall
+    (not the weekday 'Preparation Phase' tab), where the in-world 'Guild Duel'
+    sign above the boss opens the boss screen; its 'Details' button opens the
+    list. Same card route as the Battle Report, but never taps Elite Duelers."""
+    from ocr import ocr_image
+    logging.info("Navigating to Guild Duel Merit Rankings.")
+
+    for attempt in range(1, flow_attempts + 1):
+        if not _enter_guild_duel_card(ocr_image):
+            logging.warning("Guild Duel card not reached (flow attempt %d/%d).", attempt, flow_attempts)
+            continue
+
+        if not _ocr_tap_text(ocr_image, "Guild Duel", "guild_duel:hall_sign", attempts=3):
+            logging.warning("Guild Duel sign not found (flow attempt %d), re-homing.", attempt)
+            continue
+        _wait_until_stable()
+
+        if not _ocr_tap_text(ocr_image, "Details", "guild_duel:merit_details", attempts=4):
+            logging.warning("'Details' button not found (flow attempt %d), re-homing.", attempt)
+            continue
+        _wait_until_stable()
+
+        if not _at_merit_rankings(ocr_image(screenshot())):
+            logging.warning("Merit Rankings title not seen (flow attempt %d), re-homing.", attempt)
+            continue
+
+        logging.info("Arrived at Guild Duel Merit Rankings.")
+        return
+
+    cv2.imwrite(str(TEMPLATES_DIR.parent / "debug_nav_fail_guild_duel_merit_rankings.png"), screenshot())
+    raise RuntimeError(f"Could not reach Guild Duel Merit Rankings after {flow_attempts} attempts.")
 
 
 def apply_guild_filter() -> bool:

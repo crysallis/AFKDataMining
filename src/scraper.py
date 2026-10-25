@@ -183,7 +183,7 @@ def scrape_guild() -> tuple[list[Member], int]:
         _done.set()
 
 
-MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel", "pearl_bazaar")
+MODES = ("dream_realm", "afk_stages", "arena", "supreme_arena", "honor_duel", "arcane_lab", "clashfronts", "guild_duel", "guild_duel_damage", "pearl_bazaar")
 
 
 def _report_timing(mode: str, status: str, elapsed_seconds: float, run_started_at: str) -> None:
@@ -199,7 +199,7 @@ def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = Fals
     """Run each enabled game-mode ranking scan after the guild scan, with its
     own stall + game-progress watchdogs. One mode failing never blocks the
     rest · failures are printed as MODE_FAILED lines the bot can surface.
-    force_rescan only applies to guild_duel (manually re-scanning an
+    force_rescan only applies to guild_duel and guild_duel_damage (manually re-scanning an
     already-saved week's period) · other modes don't have a force kwarg."""
     mark_activity()
     mark_progress()
@@ -214,7 +214,7 @@ def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = Fals
             start = time.time()
             try:
                 mod = importlib.import_module(f"modes.{mode}")
-                if force_rescan and mode == "guild_duel":
+                if force_rescan and mode in ("guild_duel", "guild_duel_damage"):
                     status = mod.scan(force=True)
                 else:
                     status = mod.scan()
@@ -233,7 +233,7 @@ if __name__ == "__main__":
     for _mode in MODES:
         cli.add_argument(f"--{_mode.replace('_', '-')}", action="store_true")
     cli.add_argument("--force-rescan", action="store_true",
-                      help="Re-scan guild_duel even if this week's period is already saved "
+                      help="Re-scan guild_duel even if this week's period is already saved, and run guild_duel_damage outside its Saturday-Sunday window "
                            "(overwrites, doesn't duplicate)")
     args = cli.parse_args()
 

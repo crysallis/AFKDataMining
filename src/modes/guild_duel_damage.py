@@ -6,10 +6,25 @@ never read. The viewer's own pinned bar carries no damage value when they have
 not attacked, so it drops out as a non-data row."""
 import re
 
+from db import (init_db, _utcnow, guild_duel_damage_period_key,
+                guild_duel_damage_window_open, save_guild_duel_damage)
+from device import guild_duel_damage_scroll_down
+from nav import navigate_to_guild_duel_merit_rankings
+from ocr import block_center
+from modes.common import RankRow, scroll_scan, resolve_entries
 from modes.guild_duel import _is_our_guild
 
 # Podium sits above the first list row (~y725 on a 1080x1920 capture).
 LIST_Y_MIN = 700
+
+# Card geometry on a 1080x1920 capture: the damage value sits ~41px below the
+# name's center, the guild tag ~57px below it, damage at the far right, name
+# and tag left-aligned in the middle band.
+DAMAGE_X_MIN = 800
+NAME_X_RANGE = (250, 700)
+NAME_ABOVE_DAMAGE = (20, 65)
+NAME_ABOVE_DAMAGE_TYPICAL = 41
+TAG_BELOW_DAMAGE = (0, 50)
 
 _DAMAGE_RE = re.compile(r"^([\d.]+)([KMBT])$", re.IGNORECASE)
 _MULTIPLIERS = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000, "T": 1_000_000_000_000}
@@ -29,6 +44,29 @@ def parse_damage(text: str) -> int | None:
     return round(mantissa * _MULTIPLIERS[m.group(2).upper()])
 
 
+def rows_from_blocks(ocr_results: list) -> list[RankRow]:
+    """One row per damage value, paired with the name block just above it and
+    the guild tag just below it, by position. Rank is never needed (and rank 1
+    is an ornate glyph OCR does not read, so a rank-keyed parser silently drops
+    the top row). A pinned own-row bar pairs with its own damage, never with
+    the row it covers."""
+    blocks = [(*block_center(box), text.strip()) for box, text, _conf in ocr_results]
+    rows = []
+    for dx, dy, dtext in blocks:
+        if dx < DAMAGE_X_MIN or dy < LIST_Y_MIN or parse_damage(dtext) is None:
+            continue
+        names = [(abs((dy - cy) - NAME_ABOVE_DAMAGE_TYPICAL), text) for cx, cy, text in blocks
+                 if text and NAME_X_RANGE[0] <= cx <= NAME_X_RANGE[1]
+                 and NAME_ABOVE_DAMAGE[0] <= dy - cy <= NAME_ABOVE_DAMAGE[1]]
+        if not names:
+            continue
+        tags = [text for cx, cy, text in blocks
+                if NAME_X_RANGE[0] <= cx <= NAME_X_RANGE[1]
+                and TAG_BELOW_DAMAGE[0] <= cy - dy <= TAG_BELOW_DAMAGE[1]]
+        rows.append(RankRow(rank=None, name=min(names)[1], texts=tags + [dtext], y=dy))
+    return rows
+
+
 def rows_to_entries(rows: list) -> list[dict]:
     entries = []
     for row in rows:
@@ -39,3 +77,24 @@ def rows_to_entries(rows: list) -> list[dict]:
             continue
         entries.append({"name": row.name, "damage": damage})
     return entries
+
+
+def _parse(img, ocr_results) -> list[dict]:
+    return rows_to_entries(rows_from_blocks(ocr_results))
+
+
+def scan(force: bool = False) -> str:
+    init_db()
+    now = _utcnow()
+    if not force and not guild_duel_damage_window_open(now):
+        print("GUILD_DUEL_DAMAGE: skipping (outside the Saturday-Sunday UTC window).")
+        return "skipped"
+    period = guild_duel_damage_period_key(now)
+
+    navigate_to_guild_duel_merit_rankings()
+    entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
+                          require_new=False, no_change_limit=4, max_scrolls=70)
+    rows = resolve_entries(entries, "Guild Duel Damage")
+    saved = save_guild_duel_damage(rows, period)
+    print(f"GUILD_DUEL_DAMAGE: saved {saved} entries for period {period}.")
+    return "success"

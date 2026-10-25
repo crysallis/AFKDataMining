@@ -235,6 +235,13 @@ def guild_duel_scroll_down() -> None:
     swipe(540, 1300, 540, 990, 1100)
 
 
+def guild_duel_damage_scroll_down() -> None:
+    """Scroll increment for the Total Duel Merit Rankings list (row pitch
+    ~186px, visible list ~y725-1560 above the pinned own-row bar): ~3 rows per
+    swipe, so ~1.5 rows overlap between stops. Starting point, tuned live."""
+    swipe(540, 1450, 540, 890, 2000)
+
+
 def screen_changed(prev: np.ndarray, curr: np.ndarray, threshold: float = 1.5) -> bool:
     return _img_diff(prev, curr) >= threshold
 
