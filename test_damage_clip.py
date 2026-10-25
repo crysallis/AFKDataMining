@@ -93,6 +93,22 @@ check("_parse drops the row hidden under the pinned bar and keeps the own row an
       [("Crysallis", 376_000_000_000), ("Matikhv", 201_000_000_000)])
 check("_parse counts the dropped row in clip_stats", clip_stats["dropped"], 1)
 
+from modes.guild_duel_damage import clip_summary_lines
+
+clip_stats["dropped"] = 0
+clip_stats["no_own_card"] = 0
+_parse(frame(), card_blocks(1110, "Matikhv", "201B"))
+check("_parse counts a frame where no own-row card was found", clip_stats["no_own_card"], 1)
+_parse(top_pinned, card_blocks(827, "Crysallis", "376B") + card_blocks(1110, "Matikhv", "201B"))
+check("_parse does not count a frame where the own card was found", clip_stats["no_own_card"], 1)
+check("clip_summary_lines reports only the skipped count when the own card was always found",
+      clip_summary_lines({"dropped": 28, "no_own_card": 0}),
+      ["GUILD_DUEL_DAMAGE: skipped 28 row reads hidden by the pinned bar or list edge."])
+check("clip_summary_lines warns once when the own card was not found",
+      clip_summary_lines({"dropped": 3, "no_own_card": 5}),
+      ["GUILD_DUEL_DAMAGE: skipped 3 row reads hidden by the pinned bar or list edge.",
+       "GUILD_DUEL_DAMAGE: warning, own-row card not found on 5 frames, so rows under the pinned bar were not skipped."])
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

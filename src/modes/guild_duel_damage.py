@@ -13,7 +13,7 @@ from device import guild_duel_damage_scroll_down
 from nav import navigate_to_guild_duel_merit_rankings
 from ocr import block_center
 from modes.common import RankRow, scroll_scan, resolve_entries
-from modes.damage_clip import WINDOW, filter_clear_rows
+from modes.damage_clip import WINDOW, filter_with_own, find_own_card
 from modes.damage_cyrillic import reread_blocks
 from modes.damage_dedupe import drop_duplicate_reads
 from modes.damage_frames import FrameKeeper
@@ -113,13 +113,24 @@ def rows_to_entries(rows: list) -> list[dict]:
 
 SETTLE_REGION = (slice(WINDOW[0], WINDOW[1]), slice(0, 1080))
 
-clip_stats = {"dropped": 0}
+clip_stats = {"dropped": 0, "no_own_card": 0}
+
+
+def clip_summary_lines(stats: dict) -> list[str]:
+    lines = [f"GUILD_DUEL_DAMAGE: skipped {stats['dropped']} row reads hidden by the pinned bar or list edge."]
+    if stats["no_own_card"]:
+        lines.append(f"GUILD_DUEL_DAMAGE: warning, own-row card not found on {stats['no_own_card']} frames, "
+                     "so rows under the pinned bar were not skipped.")
+    return lines
 _state = {"keeper": None, "resolver": None}
 
 
 def _parse(img, ocr_results) -> list[dict]:
     ocr_results = reread_blocks(img, ocr_results, NAME_X_RANGE, LIST_Y_MIN)
-    rows, dropped = filter_clear_rows(img, rows_from_blocks(ocr_results))
+    own = find_own_card(img)
+    if own is None:
+        clip_stats["no_own_card"] += 1
+    rows, dropped = filter_with_own(rows_from_blocks(ocr_results), own)
     clip_stats["dropped"] += dropped
     entries = rows_to_entries(rows)
     if _state["keeper"] is not None:
@@ -149,6 +160,7 @@ def scan(force: bool = False) -> str:
         return "skipped"
     period = guild_duel_damage_period_key(now)
     clip_stats["dropped"] = 0
+    clip_stats["no_own_card"] = 0
     _state["keeper"] = FrameKeeper()
     _state["resolver"] = RosterResolver(learn=False)
 
@@ -156,7 +168,8 @@ def scan(force: bool = False) -> str:
     entries = scroll_scan(_parse, "Guild Duel Damage", scroll_fn=guild_duel_damage_scroll_down,
                           require_new=False, no_change_limit=4, max_scrolls=70,
                           frames_per_stop=1, settle_region=SETTLE_REGION)
-    print(f"GUILD_DUEL_DAMAGE: skipped {clip_stats['dropped']} row reads hidden by the pinned bar or list edge.")
+    for line in clip_summary_lines(clip_stats):
+        print(line)
     entries, merge_lines = drop_duplicate_reads(entries, fmt_damage=format_damage)
     for line in merge_lines:
         print(line)

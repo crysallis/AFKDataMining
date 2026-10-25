@@ -55,7 +55,10 @@ def is_clear(card: tuple[int, int], own: tuple[int, int] | None,
     return not (top < own[1] - tol and bottom > own[0] + tol)
 
 
-def filter_clear_rows(img: np.ndarray, rows: list) -> tuple[list, int]:
-    own = find_own_card(img)
+def filter_with_own(rows: list, own: tuple[int, int] | None) -> tuple[list, int]:
     kept = [r for r in rows if is_clear(row_card(r.y), own)]
     return kept, len(rows) - len(kept)
+
+
+def filter_clear_rows(img: np.ndarray, rows: list) -> tuple[list, int]:
+    return filter_with_own(rows, find_own_card(img))

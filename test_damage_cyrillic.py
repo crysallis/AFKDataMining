@@ -105,6 +105,15 @@ finally:
 check("_parse re-reads names before pairing rows, so the entry carries the Cyrillic name",
       [(e["name"], e["damage"]) for e in parsed], [("Найхэ", 171_000_000_000)])
 
+def exploding_reader(crop):
+    raise RuntimeError("engine blew up on this crop")
+
+
+survivors = reread_blocks(img, [blk(400, 1000, "Hanxa", 0.89), blk(400, 1186, "Kit", 0.99)], (250, 700), 700,
+                          reader=exploding_reader)
+check("a reader that raises keeps the original reads instead of killing the scan",
+      [(t, c) for _, t, c in survivors], [("Hanxa", 0.89), ("Kit", 0.99)])
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

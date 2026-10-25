@@ -99,6 +99,37 @@ check("_parse does not remember frames for names that resolve", ("Kit", 171_000_
 _state["keeper"] = None
 _state["resolver"] = None
 
+blocker = Path(tmp.name) / "not_a_folder"
+blocker.write_text("x")
+broken = FrameKeeper(out_dir=blocker / "sub", cap=2)
+broken.remember(frame(5), "Junk", 1)
+check("write_for never raises when the folder cannot be created", broken.write_for([("Junk", 1)]), {})
+
+locked_dir = Path(tmp.name) / "locked"
+locked_dir.mkdir()
+locked = locked_dir / "old.png"
+cv2.imwrite(str(locked), frame(1))
+os.utime(locked, (stale, stale))
+real_unlink = Path.unlink
+
+
+def deny(self, *a, **k):
+    raise PermissionError("file is open elsewhere")
+
+
+Path.unlink = deny
+raised = False
+try:
+    FrameKeeper(out_dir=locked_dir, cap=2).write_for([])
+except Exception:
+    raised = True
+finally:
+    Path.unlink = real_unlink
+check("write_for never raises when an old frame cannot be deleted", raised, False)
+
+check("the default folder is anchored at the repo root, not the working directory",
+      FrameKeeper().out_dir, Path(__file__).resolve().parent / "debug_unmatched")
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)

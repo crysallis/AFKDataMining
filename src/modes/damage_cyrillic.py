@@ -37,6 +37,9 @@ def reread_blocks(img: np.ndarray, ocr_results: list, name_x_range: tuple[int, i
             continue
         crop = img[max(0, int(min(ys)) - pad):min(height, int(max(ys)) + pad),
                    max(0, int(min(xs)) - pad):min(width, int(max(xs)) + pad)]
-        new_text, new_conf = reader(crop)
+        try:
+            new_text, new_conf = reader(crop)
+        except Exception:
+            new_text, new_conf = "", 0.0
         out.append((box, new_text, conf) if accept_cyrillic(new_text, new_conf) else (box, text, conf))
     return out

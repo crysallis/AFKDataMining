@@ -12,8 +12,8 @@ MAX_AGE_DAYS = 14
 
 
 class FrameKeeper:
-    def __init__(self, out_dir: Path = Path("debug_unmatched"), cap: int = 20):
-        self.out_dir = Path(out_dir)
+    def __init__(self, out_dir: Path | None = None, cap: int = 20):
+        self.out_dir = Path(out_dir) if out_dir is not None else Path(__file__).resolve().parents[2] / "debug_unmatched"
         self.cap = cap
         self._frames: dict[int, object] = {}
         self._entries: list[tuple[str, int, int]] = []
@@ -35,9 +35,13 @@ class FrameKeeper:
             pair = (name, damage)
             if pair not in wanted or pair in written:
                 continue
-            self.out_dir.mkdir(parents=True, exist_ok=True)
             fname = f"{stamp}_{fmt_damage(damage)}_{len(written)}.png"
-            cv2.imwrite(str(self.out_dir / fname), self._frames[key])
+            try:
+                self.out_dir.mkdir(parents=True, exist_ok=True)
+                if not cv2.imwrite(str(self.out_dir / fname), self._frames[key]):
+                    continue
+            except OSError:
+                continue
             written[pair] = f"{self.out_dir.name}/{fname}"
         return written
 
@@ -45,6 +49,12 @@ class FrameKeeper:
         if not self.out_dir.exists():
             return
         cutoff = time.time() - MAX_AGE_DAYS * 86400
-        for f in self.out_dir.glob("*.png"):
-            if f.stat().st_mtime < cutoff:
-                f.unlink()
+        try:
+            for f in self.out_dir.glob("*.png"):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    continue
+        except OSError:
+            return
