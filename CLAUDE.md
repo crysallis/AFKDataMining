@@ -363,7 +363,7 @@ Monday 00:00 UTC, no lag).
   Report is currently displaying, which is one week BEHIND the most recent
   calendar Monday (e.g. on the Monday 00:00 UTC rollover itself, Battle
   Report has just switched to showing the PRIOR week, not the day's own
-  Monday) — and returns `None` if that period already has rows. The daily
+  Monday) — and returns `None` if that period already has a row with crests (a weekend damage-only row does not count). The daily
   `--guild-duel` CLI invocation becomes a fast no-op most days, and a
   missed/failed Monday run self-heals by retrying on the next day's scrape
   until it succeeds. `guild_duel_period_key`'s boundary math is covered by
@@ -395,15 +395,15 @@ Monday 00:00 UTC, no lag).
   stretch would otherwise starve the 300s game-progress watchdog.
 - Single pass only. After the save, `scan()` prints `GUILD_DUEL: missing N
   active member(s): ...` (`get_guild_duel_missing(period)` in `db.py`: active,
-  non-pending members with no row for the period, counting hand-added rows) ·
+  non-pending members with no row with crests for the period, counting hand-added rows) ·
   the bot's `/scan` reply forwards any `GUILD_DUEL:` line. No automatic second
   pass: the sticky viewer row is unrecoverable, so a retry could never close
   that gap. Fill gaps with `python src/add_guild_duel.py "<name>" <rank> <crests>`
   (`--missing` lists, `--period` overrides) or the bot's `/guildduel add`.
 - `--force-rescan` CLI flag (`scraper.py`) bypasses `get_guild_duel_period`'s
-  already-saved-this-week gate for a manual re-scan; `save_guild_duel` is
-  `INSERT OR REPLACE` on `(member_id, period_start)` so re-saving overwrites
-  cleanly rather than duplicating.
+  already-saved-this-week gate for a manual re-scan; `save_guild_duel` is an
+  UPSERT on `(member_id, period_start)` that rewrites only `rank`, `crests` and `scanned_at`, so re-saving overwrites
+  cleanly and a weekend `damage` value survives.
 - **Known accepted gap**: the viewer's own row is sticky (pinned at a fixed
   position regardless of scroll position), occluding whatever real member
   row would otherwise be there in every sampled frame. Confirmed unavoidable
@@ -420,7 +420,7 @@ Monday 00:00 UTC, no lag).
 ## Weekend damage scan (`guild_duel_damage`)
 
 - Reads each member's total boss damage from the live "Total Duel Merit Rankings" list and saves it as `damage` (a raw integer, `567B` is 567000000000) plus `damage_scanned_at` on that week's `guild_duel_rankings` row. The Monday Battle Report scan fills `crests` and `rank` on the same row, so a row can be damage-only, crests-only or both. Anything meaning "has crests" filters `crests IS NOT NULL` (`get_guild_duel_period`, `get_guild_duel_missing`), and both saves are UPSERTs that touch only their own columns.
-- Window: Saturday 00:00 to Sunday 23:59:59 UTC only (`guild_duel_damage_window_open`). Monday 00:00 UTC resets the screen to zero, so outside the window the mode skips and writes nothing (`--force-rescan` overrides). The period key is this week's Monday (`guild_duel_damage_period_key`), the same date `guild_duel_period_key` returns once the Battle Report is readable.
+- Window: Saturday 00:00 to Sunday 23:59:59 UTC only (`guild_duel_damage_window_open`). Monday 00:00 UTC resets the screen to zero, so outside the window the mode skips and writes nothing (`--force-damage` overrides; `--force-rescan` deliberately does not, so redoing crests can never open the damage window). The period key is this week's Monday (`guild_duel_damage_period_key`), the same date `guild_duel_period_key` returns once the Battle Report is readable.
 - Route: shared `_enter_guild_duel_card()` (Battle Modes, Guild Mode tab, Guild Duel card), then, during the battle phase, the card lands in the guild hall: tap the in-world "Guild Duel" sign, then "Details" on the boss screen. Never taps Elite Duelers. `navigate_to_guild_duel_battle_report` uses the same helper but cannot be live-checked during the battle phase (no Elite Duelers tab on the hall landing); verify it on a Monday.
 - Parser: `rows_from_blocks()` pairs each damage value with the name above it and the guild tag below it by position and does NOT use `parse_rank_rows`: rank 1 is an ornate glyph OCR never reads, so a rank-keyed parser silently drops the top row. The list mixes both guilds, so rows drop on the guild tag. The pinned own-row bar pairs with its own damage, never the row it covers. Card geometry constants at the top of `modes/guild_duel_damage.py` were measured on a 1080x1920 capture.
 - Scroll: `guild_duel_damage_scroll_down()`, about 3 rows per swipe. The list ends around stop 35 but `screen_changed` never fires (animated background), so the scan idles to `max_scrolls=70`. `require_new=True` was rejected on purpose: it stops after 5 stops with no new names and would save nothing in a week where the opponent holds the first 15 rows.

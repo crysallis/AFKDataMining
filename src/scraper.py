@@ -195,12 +195,25 @@ def _report_timing(mode: str, status: str, elapsed_seconds: float, run_started_a
     log_scan_timing(mode, status, round(elapsed_seconds * 1000), run_started_at)
 
 
-def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = False) -> None:
+def force_for_mode(mode: str, force_rescan: bool, force_damage: bool) -> bool:
+    """--force-rescan re-scans an already-saved Battle Report week (guild_duel
+    only); --force-damage runs guild_duel_damage outside its Saturday-Sunday
+    window. Kept separate so redoing crests can never open the damage window."""
+    if mode == "guild_duel":
+        return force_rescan
+    if mode == "guild_duel_damage":
+        return force_damage
+    return False
+
+
+def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = False,
+              force_damage: bool = False) -> None:
     """Run each enabled game-mode ranking scan after the guild scan, with its
     own stall + game-progress watchdogs. One mode failing never blocks the
     rest · failures are printed as MODE_FAILED lines the bot can surface.
-    force_rescan only applies to guild_duel and guild_duel_damage (manually re-scanning an
-    already-saved week's period) · other modes don't have a force kwarg."""
+    force_rescan applies to guild_duel (manually re-scanning an already-saved
+    week's period) and force_damage to guild_duel_damage (running outside its
+    weekend window) · other modes don't have a force kwarg."""
     mark_activity()
     mark_progress()
     done = threading.Event()
@@ -214,7 +227,7 @@ def run_modes(enabled: list[str], run_started_at: str, force_rescan: bool = Fals
             start = time.time()
             try:
                 mod = importlib.import_module(f"modes.{mode}")
-                if force_rescan and mode in ("guild_duel", "guild_duel_damage"):
+                if force_for_mode(mode, force_rescan, force_damage):
                     status = mod.scan(force=True)
                 else:
                     status = mod.scan()
@@ -233,8 +246,10 @@ if __name__ == "__main__":
     for _mode in MODES:
         cli.add_argument(f"--{_mode.replace('_', '-')}", action="store_true")
     cli.add_argument("--force-rescan", action="store_true",
-                      help="Re-scan guild_duel even if this week's period is already saved, and run guild_duel_damage outside its Saturday-Sunday window "
+                      help="Re-scan guild_duel even if this week's period is already saved "
                            "(overwrites, doesn't duplicate)")
+    cli.add_argument("--force-damage", action="store_true",
+                      help="Run guild_duel_damage outside its Saturday-Sunday UTC window")
     args = cli.parse_args()
 
     enabled = [m for m in MODES if getattr(args, m)]
@@ -253,4 +268,4 @@ if __name__ == "__main__":
             print(f"  {m.name:<20} {m.last_active:<10} {m.combat_power:<10} {m.warband:<20} {m.activeness}")
 
     if enabled:
-        run_modes(enabled, run_started_at, force_rescan=args.force_rescan)
+        run_modes(enabled, run_started_at, force_rescan=args.force_rescan, force_damage=args.force_damage)

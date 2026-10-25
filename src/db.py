@@ -984,12 +984,13 @@ def get_guild_duel_period(force: bool = False) -> str | None:
     Battle Report always shows the just-finished week's totals, stable for
     the entire following week (confirmed live, no rollover lag at Monday
     00:00 UTC) · so there's no narrow scan window like Supreme Arena's
-    Mon/Tue gate. The only gate is 'has this period already been saved' ·
+    Mon/Tue gate. The only gate is 'does this period already have crests' ·
     a missed or failed run safely retries on every later scrape this week
-    until it succeeds, then goes quiet once rows exist. force=True bypasses
-    that gate (manual re-scan) · save_guild_duel is INSERT OR REPLACE keyed
-    on (member_id, period_start), so re-saving the same period overwrites
-    cleanly instead of duplicating."""
+    until it succeeds, then goes quiet once crests exist (a weekend
+    damage-only row does not count). force=True bypasses
+    that gate (manual re-scan) · save_guild_duel is an UPSERT keyed on
+    (member_id, period_start) that rewrites only rank, crests and scanned_at, so
+    re-saving overwrites cleanly and a weekend damage value survives."""
     period = guild_duel_period_key(_utcnow())
     if force:
         return period
@@ -1004,7 +1005,7 @@ def get_guild_duel_period(force: bool = False) -> str | None:
 
 
 def get_guild_duel_missing(period: str) -> list[str]:
-    """Active, non-pending members with no guild_duel_rankings row for this
+    """Active, non-pending members with no guild_duel_rankings row with crests for this
     period · covers rows saved by the scan and any added by hand."""
     with _connect() as conn:
         return [r["ingame_name"] for r in conn.execute(

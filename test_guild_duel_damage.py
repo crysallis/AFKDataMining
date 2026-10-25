@@ -150,6 +150,14 @@ under_the_bar = [
 check("the pinned bar keeps its own damage and is not mixed with the row it covers",
       rows_to_entries(rows_from_blocks(under_the_bar)), [{"name": "Ccc", "damage": 17_581_000_000}])
 
+from scraper import force_for_mode
+
+check("--force-rescan forces guild_duel", force_for_mode("guild_duel", True, False), True)
+check("--force-damage alone does not force guild_duel", force_for_mode("guild_duel", False, True), False)
+check("--force-rescan does NOT open the damage window", force_for_mode("guild_duel_damage", True, False), False)
+check("--force-damage forces the damage scan", force_for_mode("guild_duel_damage", False, True), True)
+check("no force flag reaches other modes", force_for_mode("arena", True, True), False)
+
 if failures:
     print(f"\n{failures}/{total} cases failed.")
     sys.exit(1)
