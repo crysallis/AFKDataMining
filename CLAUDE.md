@@ -90,7 +90,7 @@ pending members via the bot's `/review` or admin Members tab.
   value only if it STARTS as one. The old `POWER_RE.search()` substring match
   dropped real names containing digits+K/M (e.g. `Ramz78k` matched `78k`).
 - **`NAME_X_MIN = 130`** (in `parser.py`, used by both `parse_members` and
-  `parse_member_anchors`) excludes member title badges (Confidant, Warmaster,
+  `parse_member_anchors`) excludes member title badges (a member with no readable title logs `No title matched` only once the card is confirmed as a real member, so header text like `Active Players:89` and power misreads stay quiet) (Confidant, Warmaster,
   Envoy, Riff, Raff, Sage, ... — an open-ended, growing list) from being read
   as names. Titles render as their own OCR block far-left over the avatar
   (left-edge x measured 51-84 across multiple live captures), ~40-47px above

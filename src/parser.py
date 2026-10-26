@@ -190,10 +190,6 @@ def parse_members(ocr_results: list) -> list[Member]:
             if canonical:
                 title = canonical
                 break
-        if not title:
-            import logging
-            logging.getLogger(__name__).warning(
-                "No title matched for member %r near y=%d -- OCR miss or new title style", name, ny)
 
         # Power / warband / activeness row ~95px below the name row
         power_row = _find_near_y(blocks, ny + 95, 50)
@@ -224,6 +220,11 @@ def parse_members(ocr_results: list) -> list[Member]:
         # is OCR noise (header line, leading-letter power misread) — never a member.
         if not combat_power and last_active == "Unknown":
             continue
+
+        if not title:
+            import logging
+            logging.getLogger(__name__).warning(
+                "No title matched for member %r near y=%d -- OCR miss or new title style", name, ny)
 
         members.append(Member(
             name=name,
