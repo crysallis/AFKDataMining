@@ -74,7 +74,7 @@ Duel "Total Crest Rankings" screen, which — unlike every other mode — mixes
 both guilds in the same list with no in-game filter; each row's own guild tag
 is checked instead, and only "RKF RiffRaff" rows are kept. After the scan it
 lists any active members it missed; add them with `python src/add_guild_duel.py
-"<name>" <rank> <crests>`. The separate `--guild-duel-damage` mode (Saturday-Sunday UTC only) saves each member's boss damage onto the same weekly row. Results go to
+"<name>" <rank> <crests>`. The separate `--guild-duel-damage` mode (Saturday-Sunday UTC only) saves each member's boss damage onto the same weekly row. It skips rows cut off by the pinned own-row bar or a list edge, reads a settled screen, merges duplicate misreads by damage value, and reads Cyrillic names in Cyrillic (details in `CLAUDE.md`). Results go to
 per-mode tables in `guild.db` and feed the bot's `/member` (rankings) or
 `/clashfronts` (sign-ups) commands. See `ARCHITECTURE.md` for the voting and
 rank-reading details.
