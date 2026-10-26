@@ -7,7 +7,7 @@ numpy==2.4.6
 onnxruntime==1.26.0
 opencv-python==4.13.0.92
 packaging==26.2
-pillow==12.3.0
+pillow==13.0.0
 protobuf==7.35.0
 psutil==7.2.2
 pyclipper==1.4.0
