@@ -225,14 +225,15 @@ def scroll_down() -> None:
 
 
 def guild_duel_scroll_down() -> None:
-    """Scroll increment for the Guild Duel Battle Report popup card, whose
-    visible list area is shorter than the full Rankings screen scroll_down()
-    was tuned for -- that swipe overshoots this smaller viewport and skips
-    rows. Starting point: half the distance and duration of scroll_down()'s
-    620px/2200ms, for roughly double the stops over the same content. Tune
-    on-device against the real card (measure row pitch, confirm via voted
-    entry counts) before relying on this for a live scan."""
-    swipe(540, 1300, 540, 990, 1100)
+    """Scroll increment for the Guild Duel Battle Report popup card, the
+    smallest list window of any scan: about 485px visible (y 850 to the pinned
+    own-row bar at ~1335) against a 163px card. A swipe that moves the content
+    further than window minus one card (~320px) lets rows pass without ever
+    being fully visible, so they are read clipped (name cut at the banner, guild
+    tag cut by the pinned bar) and dropped. A 310px swipe moved the content
+    ~425px and cost Caernafon, ranked 4-6, every week; 180px moves it a
+    steady ~245px (measured live, 3 runs within 5px), about 1.5 rows."""
+    swipe(540, 1300, 540, 1120, 1100)
 
 
 GUILD_DUEL_DAMAGE_SWIPE = (540, 1450, 540, 890, 2000)

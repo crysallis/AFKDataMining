@@ -378,6 +378,17 @@ Monday 00:00 UTC, no lag).
 - Uses its own `guild_duel_scroll_down()` (`device.py`) instead of the
   shared `scroll_down()` — the Battle Report popup's visible list area is
   shorter than the full Rankings screen the default swipe was tuned for.
+- **Smallest list window of any scan (2026-10-26)**: about 485px visible (y 850
+  to the viewer's pinned own-row bar at ~1335) against a 163px card, so the
+  content may move at most ~320px per stop or rows pass without ever being fully
+  visible. The old 310px swipe moved it ~425px, so rows landed half under the
+  pinned bar (guild tag cut, dropped by `_is_our_guild`) or half under the
+  banner (name cut, misread), and Caernafon (ranked 4-6) was missed most weeks.
+  Now a 180px swipe (~245px, three live measurements within 5px, ~1.5 rows),
+  one frame per stop with `settle_region`, `max_scrolls=160` (the list is ~177
+  rows, ~120 stops). A scan takes ~22 minutes, up from ~12. A `--force-rescan`
+  only overwrites rows it reads: members who left the guild since keep their old
+  row (other guilds' rows are dropped by the tag check).
 - **Stop-condition fix (2026-08-24)**: `scroll_scan`'s default early-stop
   (`require_new`: break after 5 consecutive stops with zero *new* keys)
   conflated "no rows kept this stop" with "list ended" for this mode

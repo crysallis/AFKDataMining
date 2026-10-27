@@ -25,6 +25,8 @@ GUILD_TAG_THRESHOLD = 0.75
 # reward numbers are never read as row data.
 LIST_Y_MIN = 850
 
+SETTLE_REGION = (slice(LIST_Y_MIN, 1330), slice(0, 1080))
+
 
 def _is_our_guild(texts: list[str]) -> bool:
     """Lenient tag check: substring match, or fuzzy@0.75 against GUILD_TAG,
@@ -60,7 +62,8 @@ def scan(force: bool = False) -> None:
 
     navigate_to_guild_duel_battle_report()
     entries = scroll_scan(_parse, "Guild Duel", scroll_fn=guild_duel_scroll_down,
-                          require_new=False, no_change_limit=4, max_scrolls=90)
+                          require_new=False, no_change_limit=4, max_scrolls=160,
+                          frames_per_stop=1, settle_region=SETTLE_REGION)
     rows = resolve_entries(entries, "Guild Duel")
     saved = save_guild_duel(rows, period)
     print(f"GUILD_DUEL: saved {saved} entries for period {period}.")
