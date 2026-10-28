@@ -35,6 +35,18 @@ five rows; the hue check still separates same-shape tiers (epic vs hard). Only D
 Realm passes it so far; arena and clashfronts are unchanged. Rows already saved as
 `common` are not corrected. `test_tier_background.py` pins it with synthetic frames.
 
+**Dream Realm: switching the date tab keeps the scroll position (2026-10-28).** After
+one day's scan finishes partway or at the bottom of the list, tapping another date tab
+and re-applying the guild filter leaves the new day's list at the same offset, so the
+next day started around rank 6 and lost ranks 1-5 (10/26 saved nothing above rank 3,
+10/22 and 10/24 nothing above 5 and 6; the first day of a run was always fine). Rank
+gaps in the middle (10, 13...) are other guilds' players hidden by the filter, not
+misses. `_capture_days()` now calls `_reenter_rankings()` (back out, re-tap Rankings,
+which always opens at the top) before every day after the first, and stops the run if
+the Rankings button is not found (pressing back again would leave the screen).
+`test_dream_realm_reentry.py` pins the order. Days already saved with missing top
+ranks are not corrected; `get_missing_dream_realm_days` only looks for absent days.
+
 ## Key Files
 | File | Purpose |
 |---|---|

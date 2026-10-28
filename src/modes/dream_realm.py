@@ -12,7 +12,7 @@ from datetime import date
 
 from db import init_db, get_missing_dream_realm_days, save_dream_realm, get_boss_for_date
 from device import screenshot, tap
-from nav import navigate_to_mode, apply_guild_filter, find_template, _t, _wait_until_stable
+from nav import navigate_to_mode, apply_guild_filter, find_template, _t, _wait_until_stable, press_back
 from ocr import ocr_image, block_center
 from modes.common import (parse_rank_rows, scroll_scan, resolve_entries,
                            detect_tiers, tier_for_row, make_id_fallback_hook)
@@ -137,6 +137,54 @@ def _parse(img, ocr_results) -> list[dict]:
     return rows
 
 
+def _reenter_rankings() -> bool:
+    """Back out to the Dream Realm main screen and open Rankings again. Switching the
+    date tab keeps the previous day's scroll position (verified live 2026-10-28), so a
+    day scanned straight after another started partway down the list and lost its top
+    ranks. A fresh entry always opens at the top."""
+    press_back()
+    _wait_until_stable()
+    pos = find_template(screenshot(), _t("rankings_btn"), threshold=0.75)
+    if not pos:
+        print("DREAM_REALM: rankings button not found on re-entry.")
+        return False
+    tap(*pos)
+    _wait_until_stable()
+    return True
+
+
+def _capture_days(missing: list[str], today_iso: str, today_boss_id: int | None,
+                  boss_name: str) -> None:
+    logging.info("Dream Realm: %d day(s) to capture: %s",
+                 len(missing), [_date_label(d) for d in missing])
+    for index, day in enumerate(missing):
+        logging.info("Processing date: %s", _date_label(day))
+        if index and not _reenter_rankings():
+            print(f"DREAM_REALM: could not re-enter rankings for {day}, stopping.")
+            return
+        # Compute which boss was on this past day from the rotation cycle
+        if today_boss_id is not None:
+            day_boss_name, day_boss_id = get_boss_for_date(today_iso, today_boss_id, day)
+        else:
+            day_boss_name, day_boss_id = "", None
+
+        if not _select_day(day):
+            print(f"DREAM_REALM: could not select {_date_label(day)}, skipping.")
+            continue
+        if not apply_guild_filter():
+            print(f"DREAM_REALM: guild filter failed for {day}, skipping.")
+            continue
+        entries = scroll_scan(_parse, f"Dream Realm {_date_label(day)}",
+                              on_stop=make_id_fallback_hook("Dream Realm"))
+        rows = resolve_entries(entries, "Dream Realm")
+        for r in rows:
+            if not r.get("tier"):
+                r["tier"] = "common"
+        saved = save_dream_realm(rows, day, day_boss_name or boss_name, day_boss_id)
+        display_boss = day_boss_name or boss_name or "unknown"
+        print(f"DREAM_REALM: saved {saved} entries for {day} (boss: {display_boss}).")
+
+
 def scan() -> None:
     init_db()
     missing = get_missing_dream_realm_days()
@@ -193,29 +241,5 @@ def scan() -> None:
         with _connect() as _c:
             _, today_boss_id = _rb(_c, boss_name)
 
-    logging.info("Dream Realm: %d day(s) to capture: %s",
-                 len(missing), [_date_label(d) for d in missing])
-    for day in missing:
-        logging.info("Processing date: %s", _date_label(day))
-        # Compute which boss was on this past day from the rotation cycle
-        if today_boss_id is not None:
-            day_boss_name, day_boss_id = get_boss_for_date(today_iso, today_boss_id, day)
-        else:
-            day_boss_name, day_boss_id = "", None
-
-        if not _select_day(day):
-            print(f"DREAM_REALM: could not select {_date_label(day)}, skipping.")
-            continue
-        if not apply_guild_filter():
-            print(f"DREAM_REALM: guild filter failed for {day}, skipping.")
-            continue
-        entries = scroll_scan(_parse, f"Dream Realm {_date_label(day)}",
-                              on_stop=make_id_fallback_hook("Dream Realm"))
-        rows = resolve_entries(entries, "Dream Realm")
-        for r in rows:
-            if not r.get("tier"):
-                r["tier"] = "common"
-        saved = save_dream_realm(rows, day, day_boss_name or boss_name, day_boss_id)
-        display_boss = day_boss_name or boss_name or "unknown"
-        print(f"DREAM_REALM: saved {saved} entries for {day} (boss: {display_boss}).")
+    _capture_days(missing, today_iso, today_boss_id, boss_name)
     return "success"
