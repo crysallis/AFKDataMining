@@ -24,6 +24,17 @@ Never screenshot the BlueStacks window directly.
 BlueStacks internal resolution is always 1080x1920 regardless of window size.
 Window screenshots are scaled/different pixel space · templates will not match.
 
+**Tier icon templates carry their own row background (2026-10-28).** A tier template
+(`templates/<mode>/tier_*.png`) is a rectangle, so it includes the row colour it was
+captured on (white row, or the tan highlight behind the viewer's own row). Plain colour
+matching then scores the same icon ~0.70 on any other background, under the 0.75 cut,
+and `dream_realm.py` saved those rows as `common` (an all-epic screen read one epic and
+the rest common). `detect_tiers(..., saturation=True)` matches on the HSV saturation
+channel instead (icon high, every row background low), which scored 0.93-0.95 on all
+five rows; the hue check still separates same-shape tiers (epic vs hard). Only Dream
+Realm passes it so far; arena and clashfronts are unchanged. Rows already saved as
+`common` are not corrected. `test_tier_background.py` pins it with synthetic frames.
+
 ## Key Files
 | File | Purpose |
 |---|---|

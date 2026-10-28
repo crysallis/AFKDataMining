@@ -80,12 +80,17 @@ def _dominant_hue(img: np.ndarray) -> float:
     return float(np.median(hues)) if len(hues) else -1.0
 
 
+def _saturation(img: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 1]
+
+
 def find_template_all(
     screen: np.ndarray,
     template_path: Path,
     threshold: float = 0.85,
     max_matches: int = 50,
     hue_tol: int | None = None,
+    saturation: bool = False,
 ) -> list[tuple[int, int]]:
     """All (cx, cy) matches above threshold, greedy peak-picking with the
     template's own footprint suppressed after each hit so one icon doesn't
@@ -94,12 +99,21 @@ def find_template_all(
     hue_tol: if set, rejects hits whose screen-region median hue differs from
     the template's median hue by more than this value. Prevents same-shape
     icons of different colors (e.g. tier_hard blue vs tier_epic purple) from
-    cross-matching."""
+    cross-matching.
+
+    saturation: match on the HSV saturation channel instead of raw color. A
+    template is a rectangle that includes the row background it was captured
+    on (white row, tan own-row highlight), so color matching scores the same
+    icon ~0.70 on any other background. Saturation is high on the icon and low
+    on every row background, so the match depends on the icon shape alone."""
     tmpl = _load_template(template_path)
     if tmpl is None:
         return []
     tpl_hue = _dominant_hue(tmpl) if hue_tol is not None else -1.0
-    result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
+    if saturation:
+        result = cv2.matchTemplate(_saturation(screen), _saturation(tmpl), cv2.TM_CCOEFF_NORMED)
+    else:
+        result = cv2.matchTemplate(screen, tmpl, cv2.TM_CCOEFF_NORMED)
     h, w = tmpl.shape[:2]
     out: list[tuple[int, int]] = []
     while len(out) < max_matches:

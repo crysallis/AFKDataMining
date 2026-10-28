@@ -312,17 +312,21 @@ def _scan_rank_column(img, y_min: int = 0) -> list[tuple[int, int]]:
     return hits
 
 
-def detect_tiers(img, mode: str, threshold: float = 0.85) -> list[tuple[int, str]]:
+def detect_tiers(img, mode: str, threshold: float = 0.85,
+                 saturation: bool = False) -> list[tuple[int, str]]:
     """Per-row tier icons: match every templates/{mode}/tier_*.png against the
     frame and return (cy, tier_name) hits. Returns [] until the tier templates
-    are captured · scans still work, tier just stays NULL."""
+    are captured · scans still work, tier just stays NULL. `saturation` matches
+    on shape alone so rows with a different background (tan own-row highlight)
+    still hit."""
     out: list[tuple[int, str]] = []
     tier_dir = TEMPLATES_DIR / mode
     if not tier_dir.is_dir():
         return out
     for path in sorted(tier_dir.glob("tier_*.png")):
         tier_name = path.stem.removeprefix("tier_")
-        for _, cy in find_template_all(img, path, threshold=threshold, hue_tol=10):
+        for _, cy in find_template_all(img, path, threshold=threshold, hue_tol=10,
+                                       saturation=saturation):
             out.append((cy, tier_name))
     return out
 

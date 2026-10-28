@@ -124,7 +124,7 @@ def _read_boss_name(ocr_results) -> str:
 
 
 def _parse(img, ocr_results) -> list[dict]:
-    tiers = detect_tiers(img, "dream_realm", threshold=0.75)
+    tiers = detect_tiers(img, "dream_realm", threshold=0.75, saturation=True)
     raw = list(parse_rank_rows(img, ocr_results))
     rows = []
     for row in raw:
