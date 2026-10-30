@@ -245,7 +245,11 @@ row. No rank numbers on this screen at all.
 
 - Nav is NOT `navigate_to_mode()` — that function always ends by tapping a
   Rankings-style control, wrong destination here. `navigate_to_clashfronts_signups()`
-  in `nav.py` reuses the card-tap/OCR-scroll portion but OCR-taps `"ManageSign"`
+  in `nav.py` first taps the Battle Modes "Guild Mode" tab (`_tap_guild_mode_tab`,
+  shared with Guild Duel · the screen opens on Routines since the 2026-10-21 game
+  update · confirmed with the user that the Clashfronts card lives under Guild
+  Mode, not yet verified by a live scan), then reuses the card-tap/OCR-scroll
+  portion but OCR-taps `"ManageSign"`
   instead (the wrapped two-line button "Manage Sign-Ups" OCRs as `"ManageSign"` +
   `"Ups"` in separate blocks — targeting "Manage" alone only scores 0.75 fuzzy-match
   against `_ocr_tap_text`'s 0.82 threshold, found live before it shipped).

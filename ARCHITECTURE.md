@@ -446,7 +446,8 @@ offsets).
 - **honor_duel** · the viewer's own "My Rank: Unranked" slot is skipped so it
   can't steal the adjacent card's rank.
 - **supreme_arena** · off Mon/Tue UTC; dismisses the Daily Calculation popup.
-- **clashfronts** · not a rankings screen — navigates to "Manage Sign-Ups"
+- **clashfronts** · not a rankings screen — taps the Battle Modes "Guild Mode"
+  tab, then navigates to "Manage Sign-Ups"
   instead of tapping a Rankings button, and skips `apply_guild_filter()` (that
   screen is already guild-only). No rank numbers; each row is a signed-up
   member with a green/grey checkmark for selected/not-selected, read via

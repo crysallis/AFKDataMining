@@ -519,7 +519,7 @@ def _on_clashfronts_deploy_screen() -> bool:
 def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     """Navigate from any screen to the Clashfronts 'Manage Sign-Ups' list.
 
-    Route: overview → battle_modes_btn → OCR 'Clashfronts' card → OCR 'Manage'
+    Route: overview → battle_modes_btn → OCR 'Guild Mode' tab → OCR 'Clashfronts' card → OCR 'Manage'
     (button reads 'Manage Sign-Ups' across two lines; 'Manage' alone is a
     stable, distinctive OCR target). Unlike navigate_to_mode, this never taps
     a Rankings-style control -- Clashfronts' target screen is a signup roster,
@@ -539,6 +539,10 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
             _is_at_battle_modes, "battle_modes", fallback_xy=None,
         ):
             logging.warning("Battle Modes not reached (flow attempt %d), re-homing.", attempt)
+            continue
+
+        if not _tap_guild_mode_tab(ocr_image):
+            logging.warning("Guild Mode tab not reached (flow attempt %d), re-homing.", attempt)
             continue
 
         if not _ocr_tap_text(
@@ -576,6 +580,19 @@ def navigate_to_clashfronts_signups(flow_attempts: int = 3) -> None:
     raise RuntimeError(f"Could not reach Clashfronts sign-ups after {flow_attempts} attempts.")
 
 
+def _tap_guild_mode_tab(ocr_image) -> bool:
+    """Battle Modes opens on a 'Routines' tab; Guild Duel and Clashfronts live
+    under the 'Guild Mode' tab (label wraps to two lines; confirmed live that
+    OCR returns just the 'Guild' fragment, so try it first). Waits for the
+    screen to settle; returns False if the tab was not found."""
+    if not (_ocr_tap_text(ocr_image, "Guild", "battle_modes:guild_mode_tab", attempts=3)
+            or _ocr_tap_text(ocr_image, "Guild Mode", "battle_modes:guild_mode_tab_whole", attempts=2)):
+        logging.warning("'Guild Mode' tab not found, re-homing.")
+        return False
+    _wait_until_stable()
+    return True
+
+
 def _enter_guild_duel_card(ocr_image) -> bool:
     """Overview -> Battle Modes -> 'Guild Mode' tab -> Guild Duel card, each
     followed by a stable-wait. Shared by the Battle Report and Merit Rankings
@@ -593,14 +610,8 @@ def _enter_guild_duel_card(ocr_image) -> bool:
         logging.warning("Battle Modes not reached, re-homing.")
         return False
 
-    # Battle Modes now opens on a 'Routines' tab; Guild Duel lives under
-    # the 'Guild Mode' tab (label wraps to two lines; confirmed live that
-    # OCR returns just the 'Guild' fragment, so try it first).
-    if not (_ocr_tap_text(ocr_image, "Guild", "guild_duel:guild_mode_tab", attempts=3)
-            or _ocr_tap_text(ocr_image, "Guild Mode", "guild_duel:guild_mode_tab_whole", attempts=2)):
-        logging.warning("'Guild Mode' tab not found, re-homing.")
+    if not _tap_guild_mode_tab(ocr_image):
         return False
-    _wait_until_stable()
 
     if not _ocr_tap_text(
         ocr_image, card_label, f"card:{card_label}",
