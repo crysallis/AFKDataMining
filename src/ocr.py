@@ -91,7 +91,7 @@ def ocr_image(img):
     preprocessed = preprocess(img)
     v5 = get_engine_v5()
     if v5:
-        result = v5(preprocessed)
+        result = v5(preprocessed, use_cls=False)
         if result is not None:
             boxes = result.boxes if result.boxes is not None else []
             txts = result.txts if result.txts is not None else []
